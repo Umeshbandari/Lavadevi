@@ -473,6 +473,29 @@ body {
   font-weight: 700;
 }
 
+.month-bill-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.8rem 1.1rem;
+  border-radius: var(--radius-md);
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #3730a3;
+  min-width: 250px;
+  justify-content: space-between;
+}
+
+.month-bill-total span {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.month-bill-total strong {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
 .month-net-total span {
   font-size: 0.95rem;
   font-weight: 600;
@@ -558,6 +581,190 @@ body {
   color: #92400e;
   background: #fef3c7;
   border-color: #fcd34d;
+}
+
+.home-feature-hero h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.home-feature-hero p {
+  margin: 0.35rem 0 0;
+  color: var(--text-secondary);
+}
+
+.feature-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.feature-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  padding: 1.25rem;
+  text-align: left;
+  display: grid;
+  gap: 0.7rem;
+  min-height: 220px;
+  align-content: space-between;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.feature-card-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid #dbe5ee;
+}
+
+.feature-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: #93c5fd;
+}
+
+.feature-card h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--text-primary);
+}
+
+.feature-card p {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.feature-card.active {
+  border-color: #60a5fa;
+  background: linear-gradient(160deg, #eff6ff 0%, #dbeafe 100%);
+}
+
+.feature-badge {
+  justify-self: start;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+}
+
+.feature-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.feature-page-head h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.expenses-panel {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.expenses-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.expenses-wrap {
+  border-radius: var(--radius-md);
+}
+
+.back-home-btn {
+  border: 1px solid #93c5fd;
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.back-home-btn:hover {
+  background: #dbeafe;
+}
+
+.bill-summary-card {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.bill-card-head {
+  margin-bottom: 0;
+}
+
+.bill-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.bill-type-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.bill-type-card h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.operator-bill-card {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.operator-bill-card h3 {
+  color: #1d4ed8;
+}
+
+.bill-type-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.bill-type-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.bill-type-row span {
+  font-size: 0.88rem;
+  color: #334155;
+  font-weight: 600;
+}
+
+.bill-type-row strong {
+  font-size: 0.9rem;
+  color: #0f172a;
 }
 
 /* ===== CUSTOM SELECT ===== */
@@ -1034,9 +1241,58 @@ td {
   color: #1e3a8a;
 }
 
+.salary-row td {
+  background: #ecfdf5;
+  border-top: 1px solid #a7f3d0;
+  color: #065f46;
+}
+
+.balance-row td {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.balance-row.deficit td {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.bank-balance-row td {
+  background: #ecfdf5;
+  border-top: 1px solid #86efac;
+  color: #166534;
+}
+
+.bank-balance-row input {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.deficit-expense-row td {
+  background: #fef2f2;
+  border-top: 1px solid #fecaca;
+  color: #b91c1c;
+}
+
+.expense-balance-positive {
+  color: #166534;
+  font-weight: 700;
+}
+
+.expense-balance-negative {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
 .month-total-label {
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.expenses-lowercase-label {
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .month-payment-row td {
@@ -1292,6 +1548,24 @@ input.readonly:hover {
   }
 
   .payment-view-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-page-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .expenses-controls {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .bill-cards-grid {
     grid-template-columns: 1fr;
   }
 

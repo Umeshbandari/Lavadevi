@@ -2,12 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import './App.css'
 import lavaLogo from './assets/lava.jpg'
+import aadharCardImage from './assets/Aadhar.png'
 import { db } from './firebase'
 
 const STORAGE_KEY_MULTI = 'lavadevi-multi-sheet-v1'
 const STORAGE_KEY_LEGACY = 'lavadevi-sheet-v1'
+const STORAGE_KEY_EXPENSES = 'lavadevi-expenses-v4'
+const STORAGE_KEY_AADHAR_INCOME = 'lavadevi-aadhar-income-v1'
+const LEGACY_EXPENSES_STORAGE_KEYS = ['lavadevi-expenses-v1', 'lavadevi-expenses-v2', 'lavadevi-expenses-v3']
 const FIRESTORE_COLLECTION = 'appState'
 const FIRESTORE_DOC_ID = 'main'
+const PERSIST_DEBOUNCE_MS = 700
 
 const DEFAULT_COLUMNS = ['Type', 'Amount', 'Description']
 const EMPTY_LIST = []
@@ -17,6 +22,34 @@ const REMOVED_TABLE_IDS = ['personal', 'shop']
 
 const BUILTIN_TABLES = [
   { id: 'aadhar', name: 'Aadhar' },
+]
+
+const HOME_FEATURE_CARDS = [
+  {
+    id: 'aadhar',
+    name: 'Aadhar',
+    description: 'Manage Operator entry, HO view, and Bill summaries.',
+  },
+  {
+    id: 'expenses',
+    name: 'Expenses',
+    description: 'Track month-wise expense entries by item, amount, and date.',
+  },
+  {
+    id: 'aadhar-income',
+    name: 'Aadhar Income',
+    description: 'Track month-wise aadhar income and expense entries.',
+  },
+  {
+    id: 'banking',
+    name: 'Banking',
+    description: 'Capture deposits, withdrawals, and commission details.',
+  },
+  {
+    id: 'reports',
+    name: 'Reports',
+    description: 'Consolidated summary cards and exports across features.',
+  },
 ]
 
 let pdfToolsPromise
@@ -159,6 +192,140 @@ function createRow(columns, serialNo) {
   return row
 }
 
+function createExpenseRow(serialNo, dateValue = new Date().toISOString().slice(0, 10)) {
+  return {
+    id: crypto.randomUUID(),
+    sNo: serialNo,
+    item: '',
+    amount: '',
+    date: normalizeDateValue(dateValue),
+  }
+}
+
+function normalizeExpenseRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [createExpenseRow(1)]
+  }
+
+  return rows.map((row, index) => ({
+    id: row?.id || crypto.randomUUID(),
+    sNo: index + 1,
+    item: String(row?.item ?? ''),
+    amount: String(row?.amount ?? ''),
+    date: normalizeDateValue(row?.date),
+  }))
+}
+
+function getInitialExpensesState() {
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+  const fallback = {
+    selectedMonth: fallbackMonth,
+    rows: [createExpenseRow(1, `${fallbackMonth}-01`)],
+    salaryByMonth: {},
+    otherIncomeByMonth: {},
+    submittedMonths: {},
+  }
+
+  LEGACY_EXPENSES_STORAGE_KEYS.forEach((legacyKey) => {
+    localStorage.removeItem(legacyKey)
+  })
+
+  const raw = localStorage.getItem(STORAGE_KEY_EXPENSES)
+  if (!raw) {
+    return fallback
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    const selectedMonth = /^\d{4}-\d{2}$/.test(parsed?.selectedMonth)
+      ? parsed.selectedMonth
+      : fallbackMonth
+
+    return {
+      selectedMonth,
+      rows: normalizeExpenseRows(parsed?.rows),
+      salaryByMonth: parsed?.salaryByMonth && typeof parsed.salaryByMonth === 'object' ? parsed.salaryByMonth : {},
+      otherIncomeByMonth: parsed?.otherIncomeByMonth && typeof parsed.otherIncomeByMonth === 'object' ? parsed.otherIncomeByMonth : {},
+      submittedMonths: parsed?.submittedMonths && typeof parsed.submittedMonths === 'object' ? parsed.submittedMonths : {},
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEY_EXPENSES)
+    return fallback
+  }
+}
+
+function createAadharIncomeRow(serialNo, dateValue = new Date().toISOString().slice(0, 10)) {
+  return {
+    id: crypto.randomUUID(),
+    sNo: serialNo,
+    date: normalizeDateValue(dateValue),
+    name: '',
+    type: 'Income',
+    amount: '',
+  }
+}
+
+function normalizeAadharIncomeRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [createAadharIncomeRow(1)]
+  }
+
+  return rows.map((row, index) => ({
+    id: row?.id || crypto.randomUUID(),
+    sNo: index + 1,
+    date: normalizeDateValue(row?.date),
+    name: String(row?.name ?? ''),
+    type: row?.type === 'Expense' ? 'Expense' : 'Income',
+    amount: String(row?.amount ?? ''),
+  }))
+}
+
+function getInitialAadharIncomeState() {
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+  const fallback = {
+    selectedMonth: fallbackMonth,
+    rows: [createAadharIncomeRow(1, `${fallbackMonth}-01`)],
+    submittedMonths: {},
+  }
+
+  const raw = localStorage.getItem(STORAGE_KEY_AADHAR_INCOME)
+  if (!raw) {
+    return fallback
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    const selectedMonth = /^\d{4}-\d{2}$/.test(parsed?.selectedMonth)
+      ? parsed.selectedMonth
+      : fallbackMonth
+
+    return {
+      selectedMonth,
+      rows: normalizeAadharIncomeRows(parsed?.rows),
+      submittedMonths: parsed?.submittedMonths && typeof parsed.submittedMonths === 'object' ? parsed.submittedMonths : {},
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEY_AADHAR_INCOME)
+    return fallback
+  }
+}
+
+function getNextMonthKey(monthKey) {
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+    return null
+  }
+
+  const [yearText, monthText] = monthKey.split('-')
+  const year = Number(yearText)
+  const month = Number(monthText)
+  if (!Number.isFinite(year) || !Number.isFinite(month)) {
+    return null
+  }
+
+  const nextDate = new Date(year, month, 1)
+  return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`
+}
+
 function createTable(name, isBuiltIn = false, fixedId = null) {
   const isAadhar = fixedId === 'aadhar'
   const columns = isAadhar ? AADHAR_COLUMNS : [...DEFAULT_COLUMNS]
@@ -168,6 +335,7 @@ function createTable(name, isBuiltIn = false, fixedId = null) {
     name,
     isBuiltIn,
     lockedMonths: [],
+    lockedDates: [],
     monthPayments: {},
     yearPayments: {},
     columns,
@@ -218,6 +386,7 @@ function normalizePersistedState(rawState) {
     const columns = normalizeColumns(table.columns, table.id)
     const isBuiltIn = BUILTIN_TABLES.some((builtin) => builtin.id === table.id)
     const lockedMonths = Array.isArray(table.lockedMonths) ? table.lockedMonths : []
+    const lockedDates = Array.isArray(table.lockedDates) ? table.lockedDates : []
     const monthPayments = table.monthPayments && typeof table.monthPayments === 'object' ? table.monthPayments : {}
     const yearPayments = table.yearPayments && typeof table.yearPayments === 'object' ? table.yearPayments : {}
 
@@ -226,6 +395,7 @@ function normalizePersistedState(rawState) {
       name: table.name || `Table ${index + 1}`,
       isBuiltIn,
       lockedMonths,
+      lockedDates,
       monthPayments,
       yearPayments,
       columns,
@@ -320,6 +490,7 @@ function sanitizeFirestoreValue(value) {
 function serializeTableForFirestore(table) {
   const rows = Array.isArray(table.rows) ? table.rows : []
   const lockedMonths = Array.isArray(table.lockedMonths) ? table.lockedMonths : []
+  const lockedDates = Array.isArray(table.lockedDates) ? table.lockedDates : []
   const columns = Array.isArray(table.columns) ? table.columns : []
 
   const safeRowsById = Object.fromEntries(
@@ -349,6 +520,11 @@ function serializeTableForFirestore(table) {
       lockedMonths
         .map((month) => [String(month), true])
         .filter(([monthKey]) => monthKey !== 'undefined'),
+    ),
+    lockedDatesByKey: Object.fromEntries(
+      lockedDates
+        .map((date) => [String(date), true])
+        .filter(([dateKey]) => dateKey !== 'undefined'),
     ),
     monthPayments: sanitizeFirestoreValue(table.monthPayments) || {},
     yearPayments: sanitizeFirestoreValue(table.yearPayments) || {},
@@ -410,12 +586,16 @@ function deserializeTableFromFirestore(tableId, storedTable) {
   const lockedMonths = Array.isArray(sourceTable.lockedMonths)
     ? sourceTable.lockedMonths
     : Object.keys(sourceTable.lockedMonthsByKey || {})
+  const lockedDates = Array.isArray(sourceTable.lockedDates)
+    ? sourceTable.lockedDates
+    : Object.keys(sourceTable.lockedDatesByKey || {})
 
   return {
     id: tableId,
     name: sourceTable.name || tableId,
     isBuiltIn: Boolean(sourceTable.isBuiltIn || BUILTIN_TABLES.some((builtin) => builtin.id === tableId)),
     lockedMonths,
+    lockedDates,
     monthPayments: sourceTable.monthPayments && typeof sourceTable.monthPayments === 'object' ? sourceTable.monthPayments : {},
     yearPayments: sourceTable.yearPayments && typeof sourceTable.yearPayments === 'object' ? sourceTable.yearPayments : {},
     columns,
@@ -477,6 +657,7 @@ function getInitialState() {
         columns,
         rows: legacyRows,
         lockedMonths: [],
+        lockedDates: [],
         monthPayments: {},
         yearPayments: {},
       }
@@ -561,6 +742,14 @@ function formatFinancialYear(startYear) {
   return `FY ${startYear}-${String(startYear + 1).slice(-2)}`
 }
 
+function formatRupees(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return '0'
+  }
+  return String(Math.round(numeric))
+}
+
 function getDateMonthKey(dateValue) {
   const parsed = toDate(dateValue)
   if (!parsed) {
@@ -635,6 +824,8 @@ function getSignedAmount(row) {
 
 function App() {
   const [initialState] = useState(() => getInitialState())
+  const [initialExpensesState] = useState(() => getInitialExpensesState())
+  const [initialAadharIncomeState] = useState(() => getInitialAadharIncomeState())
   const persistTimeoutRef = useRef(null)
   const latestStateRef = useRef({
     activeTableId: initialState.activeTableId,
@@ -652,6 +843,19 @@ function App() {
   const [viewMonth, setViewMonth] = useState(new Date().toISOString().slice(0, 7))
   const [viewFy, setViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
   const [firestoreReady, setFirestoreReady] = useState(false)
+  const [selectedFeature, setSelectedFeature] = useState(null)
+  const [expenseMonth, setExpenseMonth] = useState(initialExpensesState.selectedMonth)
+  const [expenseViewFy, setExpenseViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
+  const [expenseRows, setExpenseRows] = useState(initialExpensesState.rows)
+  const [salaryByMonth, setSalaryByMonth] = useState(initialExpensesState.salaryByMonth || {})
+  const [otherIncomeByMonth, setOtherIncomeByMonth] = useState(initialExpensesState.otherIncomeByMonth || {})
+  const [submittedExpenseMonths, setSubmittedExpenseMonths] = useState(initialExpensesState.submittedMonths || {})
+  const [expenseMode, setExpenseMode] = useState('entry')
+  const [aadharIncomeMonth, setAadharIncomeMonth] = useState(initialAadharIncomeState.selectedMonth)
+  const [aadharIncomeRows, setAadharIncomeRows] = useState(initialAadharIncomeState.rows)
+  const [submittedAadharIncomeMonths, setSubmittedAadharIncomeMonths] = useState(initialAadharIncomeState.submittedMonths || {})
+  const [aadharIncomeMode, setAadharIncomeMode] = useState('entry')
+  const [aadharIncomeViewFy, setAadharIncomeViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
 
   useEffect(() => {
     latestStateRef.current = {
@@ -679,7 +883,7 @@ function App() {
           console.error('Failed to save data to Firebase:', error)
         })
       }
-    }, 180)
+    }, PERSIST_DEBOUNCE_MS)
 
     return () => {
       if (persistTimeoutRef.current) {
@@ -704,6 +908,38 @@ function App() {
       window.removeEventListener('pagehide', flushPersistedState)
     }
   }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY_EXPENSES,
+        JSON.stringify({
+          selectedMonth: expenseMonth,
+          rows: expenseRows,
+          salaryByMonth,
+          otherIncomeByMonth,
+          submittedMonths: submittedExpenseMonths,
+        }),
+      )
+    } catch (error) {
+      console.error('Failed to persist expenses data:', error)
+    }
+  }, [expenseMonth, expenseRows, otherIncomeByMonth, salaryByMonth, submittedExpenseMonths])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY_AADHAR_INCOME,
+        JSON.stringify({
+          selectedMonth: aadharIncomeMonth,
+          rows: aadharIncomeRows,
+          submittedMonths: submittedAadharIncomeMonths,
+        }),
+      )
+    } catch (error) {
+      console.error('Failed to persist aadhar income data:', error)
+    }
+  }, [aadharIncomeMonth, aadharIncomeRows, submittedAadharIncomeMonths])
 
   useEffect(() => {
     let isMounted = true
@@ -748,6 +984,8 @@ function App() {
   const rows = activeTable?.rows || EMPTY_LIST
   const columns = activeTable?.columns || EMPTY_LIST
   const lockedMonths = Array.isArray(activeTable?.lockedMonths) ? activeTable.lockedMonths : EMPTY_LIST
+  const lockedDates = Array.isArray(activeTable?.lockedDates) ? activeTable.lockedDates : EMPTY_LIST
+  const lockedDateSet = useMemo(() => new Set(lockedDates), [lockedDates])
   const monthPayments = activeTable?.monthPayments && typeof activeTable.monthPayments === 'object'
     ? activeTable.monthPayments
     : {}
@@ -759,8 +997,12 @@ function App() {
   const currentMonth = currentDate.slice(0, 7)
   const showExportControls = !isAadharTable || aadharMode === 'view'
   const isViewMode = isAadharTable && aadharMode === 'view'
+  const isBillMode = isAadharTable && aadharMode === 'bill'
   const selectedMonthKey = isViewMode ? viewMonth : entryMonth
-  const isViewMonthSubmitted = !isAadharTable || lockedMonths.includes(viewMonth)
+  const hasLockedDateInViewMonth = isAadharTable && rows.some(
+    (row) => row.date?.slice(0, 7) === viewMonth && lockedDateSet.has(row.date),
+  )
+  const isViewMonthSubmitted = !isAadharTable || lockedMonths.includes(viewMonth) || hasLockedDateInViewMonth
   const entryMonthLocked = isAadharTable && lockedMonths.includes(entryMonth)
   const selectedMonthLocked = isAadharTable && lockedMonths.includes(selectedMonthKey)
   const selectedMonthPayment = monthPayments[selectedMonthKey] || {}
@@ -772,6 +1014,10 @@ function App() {
       return rows
     }
 
+    if (aadharMode === 'bill') {
+      return EMPTY_LIST
+    }
+
     if (aadharMode === 'entry') {
       return createMonthRowMap(rows, entryMonth)
     }
@@ -781,9 +1027,9 @@ function App() {
     }
 
     return rows
-      .filter((row) => row.date?.slice(0, 7) === viewMonth)
+      .filter((row) => row.date?.slice(0, 7) === viewMonth && lockedDateSet.has(row.date))
       .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-  }, [aadharMode, entryMonth, isAadharTable, isViewMonthSubmitted, rows, viewMonth])
+  }, [aadharMode, entryMonth, isAadharTable, isViewMonthSubmitted, lockedDateSet, rows, viewMonth])
 
   const monthBillTotal = useMemo(() => {
     if (!isAadharTable) {
@@ -831,7 +1077,7 @@ function App() {
   }, [columns, visibleRows])
 
   const fyOptions = useMemo(() => {
-    if (!isViewMode) {
+    if (!isAadharTable || (aadharMode !== 'view' && aadharMode !== 'bill')) {
       return EMPTY_LIST
     }
 
@@ -855,7 +1101,7 @@ function App() {
     }
 
     return expandedYears.reverse()
-  }, [isViewMode, rows])
+  }, [aadharMode, isAadharTable, rows])
 
   const hoFySummaryRows = useMemo(() => {
     if (!isViewMode) {
@@ -874,7 +1120,7 @@ function App() {
     })
 
     return monthKeys.map((monthKey) => {
-      const monthRows = rows.filter((row) => row.date?.slice(0, 7) === monthKey)
+      const monthRows = rows.filter((row) => row.date?.slice(0, 7) === monthKey && lockedDateSet.has(row.date))
       const enrollments = monthRows.reduce((sum, row) => sum + (Number(row.Enrollments) || 0), 0)
       const sale = monthRows.reduce((sum, row) => sum + (Number(row.Sale) || 0), 0)
       const currentRowPaidAmount = monthRows.reduce((sum, row) => sum + (Number(row['Paid amount']) || 0), 0)
@@ -884,7 +1130,9 @@ function App() {
         }
 
         const entries = []
-        const sourceMonthRows = rows.filter((row) => row.date?.slice(0, 7) === sourceMonthKey)
+        const sourceMonthRows = rows.filter(
+          (row) => row.date?.slice(0, 7) === sourceMonthKey && lockedDateSet.has(row.date),
+        )
 
         const billPaidMonth = getDateMonthKey(payment.billPaidDate)
         if (payment.billSubmitted && billPaidMonth === monthKey) {
@@ -920,7 +1168,7 @@ function App() {
         remaining: sale - (currentRowPaidAmount + paymentDetailTotal),
       }
     })
-  }, [isViewMode, monthPayments, rows, viewFy])
+  }, [isViewMode, lockedDateSet, monthPayments, rows, viewFy])
 
   const hoFyYearTotals = useMemo(() => {
     return hoFySummaryRows.reduce(
@@ -939,7 +1187,269 @@ function App() {
     )
   }, [hoFySummaryRows])
 
+  const billFySummaryRows = useMemo(() => {
+    if (!isBillMode) {
+      return EMPTY_LIST
+    }
+
+    const fyStart = Number(viewFy)
+    if (!Number.isFinite(fyStart)) {
+      return EMPTY_LIST
+    }
+
+    const monthKeys = Array.from({ length: 12 }, (_, index) => {
+      const monthNumber = ((index + 3) % 12) + 1
+      const year = index < 9 ? fyStart : fyStart + 1
+      return `${year}-${String(monthNumber).padStart(2, '0')}`
+    })
+
+    const totalsByMonth = new Map()
+
+    rows.forEach((row) => {
+      const monthKey = row.date?.slice(0, 7)
+      if (!monthKey) {
+        return
+      }
+
+      const current = totalsByMonth.get(monthKey) || { operatorBill: 0 }
+      const billValue = Number(row.Bill) || 0
+
+      current.operatorBill += billValue
+
+      totalsByMonth.set(monthKey, current)
+    })
+
+    return monthKeys.map((month) => {
+      const totals = totalsByMonth.get(month) || { operatorBill: 0 }
+      return {
+        month,
+        operatorBill: totals.operatorBill,
+      }
+    })
+  }, [isBillMode, rows, viewFy])
+
+  const billFyYearTotal = useMemo(() => {
+    return billFySummaryRows.reduce((sum, row) => sum + row.operatorBill, 0)
+  }, [billFySummaryRows])
+
   const hoNetAmount = selectedYearPayment.remainingSubmitted ? 0 : hoFyYearTotals.remaining
+
+  const expenseManualRows = useMemo(() => {
+    return expenseRows.filter((row) => !row.autoDeficitFrom)
+  }, [expenseRows])
+
+  const expenseMonthSummaryByMonth = useMemo(() => {
+    const monthSet = new Set([
+      ...expenseManualRows.map((row) => row.date?.slice(0, 7)).filter(Boolean),
+      ...Object.keys(salaryByMonth || {}),
+      ...Object.keys(otherIncomeByMonth || {}),
+    ])
+
+    const sortedMonths = [...monthSet]
+      .filter((monthKey) => /^\d{4}-\d{2}$/.test(monthKey))
+      .sort((a, b) => a.localeCompare(b))
+
+    let carryForward = 0
+    const summary = {}
+
+    sortedMonths.forEach((monthKey) => {
+      const monthRows = expenseManualRows.filter((row) => row.date?.slice(0, 7) === monthKey)
+      const monthTotal = monthRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+      const salaryIncome = Number(salaryByMonth[monthKey] || 0)
+      const otherIncome = Number(otherIncomeByMonth[monthKey] || 0)
+      const totalIncome = salaryIncome + otherIncome
+      const carryFromPrevious = carryForward
+      const carryLabel = carryFromPrevious > 0 ? 'Surplus' : carryFromPrevious < 0 ? 'Deficit' : ''
+      const carryAmount = Math.abs(carryFromPrevious)
+      const balance = totalIncome - monthTotal + carryFromPrevious
+      const isSubmitted = Boolean(submittedExpenseMonths[monthKey])
+
+      summary[monthKey] = {
+        monthTotal,
+        totalIncome,
+        carryFromPrevious,
+        carryLabel,
+        carryAmount,
+        balance,
+        submitted: isSubmitted,
+      }
+
+      carryForward = isSubmitted ? balance : 0
+    })
+
+    return summary
+  }, [expenseManualRows, otherIncomeByMonth, salaryByMonth, submittedExpenseMonths])
+
+  const visibleExpenseRows = useMemo(() => {
+    const monthRows = expenseManualRows
+      .filter((row) => row.date?.slice(0, 7) === expenseMonth)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+
+    return monthRows.map((row, index) => ({
+      ...row,
+      sNo: index + 1,
+    }))
+  }, [expenseManualRows, expenseMonth])
+
+  const expenseMonthTotal = useMemo(() => {
+    return visibleExpenseRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+  }, [visibleExpenseRows])
+
+  const expenseMonthTotalIncome = Number(
+    expenseMonthSummaryByMonth[expenseMonth]?.totalIncome
+      ?? ((Number(salaryByMonth[expenseMonth] || 0)) + (Number(otherIncomeByMonth[expenseMonth] || 0))),
+  )
+  const expenseMonthCarryLabel = String(expenseMonthSummaryByMonth[expenseMonth]?.carryLabel || '')
+  const expenseMonthCarryAmount = Number(expenseMonthSummaryByMonth[expenseMonth]?.carryAmount || 0)
+  const expenseMonthSignedCarry = Number(expenseMonthSummaryByMonth[expenseMonth]?.carryFromPrevious || 0)
+  const expenseMonthBalance = Number(
+    expenseMonthSummaryByMonth[expenseMonth]?.balance
+      ?? (expenseMonthTotalIncome - expenseMonthTotal + expenseMonthSignedCarry),
+  )
+  const isExpenseMonthSubmitted = Boolean(submittedExpenseMonths[expenseMonth])
+  const isExpenseViewMode = expenseMode === 'view'
+
+  const expenseViewFyOptions = useMemo(() => {
+    const years = new Set([getFinancialYearStartYear(new Date().toISOString().slice(0, 10))])
+    Object.keys(expenseMonthSummaryByMonth).forEach((monthKey) => {
+      years.add(getFinancialYearStartYear(`${monthKey}-01`))
+    })
+    return [...years].sort((a, b) => b - a)
+  }, [expenseMonthSummaryByMonth])
+
+  const expenseViewFyRows = useMemo(() => {
+    const fyStart = Number(expenseViewFy)
+    if (!Number.isFinite(fyStart)) {
+      return EMPTY_LIST
+    }
+
+    const monthKeys = Array.from({ length: 12 }, (_, index) => {
+      const monthNumber = ((index + 3) % 12) + 1
+      const year = index < 9 ? fyStart : fyStart + 1
+      return `${year}-${String(monthNumber).padStart(2, '0')}`
+    })
+
+    return monthKeys
+      .filter((monthKey) => Boolean(submittedExpenseMonths[monthKey]) && expenseMonthSummaryByMonth[monthKey])
+      .map((monthKey) => ({
+        month: monthKey,
+        totalExpenses: Number(expenseMonthSummaryByMonth[monthKey]?.monthTotal || 0),
+        balance: Number(expenseMonthSummaryByMonth[monthKey]?.balance || 0),
+      }))
+  }, [expenseMonthSummaryByMonth, expenseViewFy, submittedExpenseMonths])
+
+  const visibleAadharIncomeRows = useMemo(() => {
+    const monthRows = aadharIncomeRows
+      .filter((row) => row.date?.slice(0, 7) === aadharIncomeMonth)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+
+    return monthRows.map((row, index) => ({
+      ...row,
+      sNo: index + 1,
+      type: row.type === 'Expense' ? 'Expense' : 'Income',
+    }))
+  }, [aadharIncomeMonth, aadharIncomeRows])
+
+  const aadharIncomeSummaryByMonth = useMemo(() => {
+    const monthKeys = new Set([aadharIncomeMonth])
+    aadharIncomeRows.forEach((row) => {
+      const monthKey = getDateMonthKey(row.date)
+      if (monthKey) {
+        monthKeys.add(monthKey)
+      }
+    })
+    Object.keys(submittedAadharIncomeMonths || {}).forEach((monthKey) => {
+      if (/^\d{4}-\d{2}$/.test(monthKey)) {
+        monthKeys.add(monthKey)
+      }
+    })
+
+    const orderedMonths = [...monthKeys].sort((a, b) => a.localeCompare(b))
+    let runningCarry = 0
+
+    return orderedMonths.reduce((summary, monthKey) => {
+      const monthRows = aadharIncomeRows.filter((row) => getDateMonthKey(row.date) === monthKey)
+      const totalIncome = monthRows
+        .filter((row) => row.type !== 'Expense')
+        .reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+      const totalExpenditure = monthRows
+        .filter((row) => row.type === 'Expense')
+        .reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+
+      const carryFromPrevious = runningCarry
+      const balance = totalIncome - totalExpenditure + carryFromPrevious
+      const isSubmitted = Boolean(submittedAadharIncomeMonths[monthKey])
+
+      summary[monthKey] = {
+        totalIncome,
+        totalExpenditure,
+        carryFromPrevious,
+        carryLabel: carryFromPrevious >= 0 ? 'Surplus' : 'Deficit',
+        carryAmount: Math.abs(carryFromPrevious),
+        balance,
+        submitted: isSubmitted,
+      }
+
+      runningCarry = isSubmitted ? balance : 0
+      return summary
+    }, {})
+  }, [aadharIncomeMonth, aadharIncomeRows, submittedAadharIncomeMonths])
+
+  const aadharIncomeMonthTotalIncome = Number(aadharIncomeSummaryByMonth[aadharIncomeMonth]?.totalIncome || 0)
+  const aadharIncomeMonthTotalExpenditure = Number(aadharIncomeSummaryByMonth[aadharIncomeMonth]?.totalExpenditure || 0)
+  const aadharIncomeMonthCarryLabel = String(aadharIncomeSummaryByMonth[aadharIncomeMonth]?.carryLabel || 'Surplus')
+  const aadharIncomeMonthCarryAmount = Number(aadharIncomeSummaryByMonth[aadharIncomeMonth]?.carryAmount || 0)
+  const aadharIncomeMonthSignedCarry = Number(aadharIncomeSummaryByMonth[aadharIncomeMonth]?.carryFromPrevious || 0)
+  const aadharIncomeMonthBalance = Number(
+    aadharIncomeSummaryByMonth[aadharIncomeMonth]?.balance
+      ?? (aadharIncomeMonthTotalIncome - aadharIncomeMonthTotalExpenditure + aadharIncomeMonthSignedCarry),
+  )
+  const isAadharIncomeMonthSubmitted = Boolean(submittedAadharIncomeMonths[aadharIncomeMonth])
+  const isAadharIncomeViewMode = aadharIncomeMode === 'view'
+
+  const aadharIncomeViewFyOptions = useMemo(() => {
+    const years = new Set([getFinancialYearStartYear(new Date().toISOString().slice(0, 10))])
+    Object.keys(aadharIncomeSummaryByMonth).forEach((monthKey) => {
+      years.add(getFinancialYearStartYear(`${monthKey}-01`))
+    })
+    return [...years].sort((a, b) => b - a)
+  }, [aadharIncomeSummaryByMonth])
+
+  const aadharIncomeViewFyRows = useMemo(() => {
+    const fyStart = Number(aadharIncomeViewFy)
+    if (!Number.isFinite(fyStart)) {
+      return EMPTY_LIST
+    }
+
+    const monthKeys = Array.from({ length: 12 }, (_, index) => {
+      const monthNumber = ((index + 3) % 12) + 1
+      const year = index < 9 ? fyStart : fyStart + 1
+      return `${year}-${String(monthNumber).padStart(2, '0')}`
+    })
+
+    return monthKeys
+      .filter((monthKey) => Boolean(submittedAadharIncomeMonths[monthKey]) && aadharIncomeSummaryByMonth[monthKey])
+      .map((monthKey) => ({
+        month: monthKey,
+        totalIncome: Number(aadharIncomeSummaryByMonth[monthKey]?.totalIncome || 0),
+        totalExpenditure: Number(aadharIncomeSummaryByMonth[monthKey]?.totalExpenditure || 0),
+        balance: Number(aadharIncomeSummaryByMonth[monthKey]?.balance || 0),
+      }))
+  }, [aadharIncomeSummaryByMonth, aadharIncomeViewFy, submittedAadharIncomeMonths])
+
+  useEffect(() => {
+    setExpenseRows((previousRows) => {
+      const manualRows = previousRows.filter((row) => !row.autoDeficitFrom)
+      if (manualRows.length === previousRows.length) {
+        return previousRows
+      }
+
+      return manualRows.map((row, index) => ({
+        ...row,
+        sNo: index + 1,
+      }))
+    })
+  }, [])
 
   useEffect(() => {
     if (!isAadharTable || aadharMode !== 'entry') {
@@ -1022,6 +1532,10 @@ function App() {
           return row
         }
 
+        if (table.id === 'aadhar' && Array.isArray(table.lockedDates) && table.lockedDates.includes(row.date)) {
+          return row
+        }
+
         let updatedRow = { ...row, [key]: value }
 
         if (table.id === 'aadhar') {
@@ -1037,6 +1551,109 @@ function App() {
         return updatedRow
       }), key === 'date'),
     }))
+  }
+
+  function toggleDateLock(dateValue, shouldLock) {
+    if (!isAadharTable || !dateValue || aadharMode !== 'entry') {
+      return
+    }
+
+    updateActiveTable((table) => {
+      const previous = Array.isArray(table.lockedDates) ? table.lockedDates : []
+      const next = shouldLock
+        ? [...new Set([...previous, dateValue])]
+        : previous.filter((lockedDate) => lockedDate !== dateValue)
+
+      return {
+        ...table,
+        lockedDates: next.sort((a, b) => a.localeCompare(b)),
+      }
+    })
+  }
+
+  function updateExpenseCell(rowId, key, value) {
+    setExpenseRows((previousRows) => previousRows.map((row) => {
+      if (row.id !== rowId) {
+        return row
+      }
+      if (row.autoDeficitFrom) {
+        return row
+      }
+      return {
+        ...row,
+        [key]: value,
+      }
+    }))
+  }
+
+  function updateExpenseSalary(monthKey, value) {
+    setSalaryByMonth((previous) => ({
+      ...previous,
+      [monthKey]: value,
+    }))
+  }
+
+  function updateExpenseOtherIncome(monthKey, value) {
+    setOtherIncomeByMonth((previous) => ({
+      ...previous,
+      [monthKey]: value,
+    }))
+  }
+
+  function updateAadharIncomeCell(rowId, key, value) {
+    setAadharIncomeRows((previousRows) => previousRows.map((row) => {
+      if (row.id !== rowId) {
+        return row
+      }
+      return {
+        ...row,
+        [key]: value,
+      }
+    }))
+  }
+
+  function addAadharIncomeRow() {
+    setAadharIncomeRows((previousRows) => {
+      const next = [...previousRows, createAadharIncomeRow(previousRows.length + 1, `${aadharIncomeMonth}-01`)]
+      return next.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function submitAadharIncomeMonth() {
+    setSubmittedAadharIncomeMonths((previous) => ({
+      ...previous,
+      [aadharIncomeMonth]: true,
+    }))
+  }
+
+  function unlockAadharIncomeMonth() {
+    setSubmittedAadharIncomeMonths((previous) => {
+      const next = { ...previous }
+      delete next[aadharIncomeMonth]
+      return next
+    })
+  }
+
+  function submitExpenseMonth() {
+    setSubmittedExpenseMonths((previous) => ({
+      ...previous,
+      [expenseMonth]: true,
+    }))
+  }
+
+  function unlockExpenseMonth() {
+    setSubmittedExpenseMonths((previous) => {
+      const next = { ...previous }
+      delete next[expenseMonth]
+      return next
+    })
+  }
+
+  function addExpenseRow() {
+    setExpenseRows((previousRows) => {
+      const next = [...previousRows, createExpenseRow(previousRows.length + 1, `${expenseMonth}-01`)]
+      return next.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
   }
 
   function updateMonthPayment(field, value) {
@@ -1461,6 +2078,15 @@ function App() {
     XLSX.writeFile(wb, `Aadhar_HO_${fyLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
+  function openFeature(featureId) {
+    if (featureId === 'aadhar' || featureId === 'expenses' || featureId === 'aadhar-income') {
+      setSelectedFeature(featureId)
+      return
+    }
+
+    window.alert('This feature card will be enabled soon.')
+  }
+
   return (
     <div className="app-shell">
       <header className="top-nav">
@@ -1472,6 +2098,37 @@ function App() {
       </header>
 
       <section className="page">
+        {selectedFeature === null ? (
+          <>
+            <div className="feature-card-grid">
+              {HOME_FEATURE_CARDS.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  className={card.id === 'aadhar' || card.id === 'expenses' || card.id === 'aadhar-income' ? 'feature-card active' : 'feature-card'}
+                  onClick={() => openFeature(card.id)}
+                >
+                  {card.id === 'aadhar' && (
+                    <img src={aadharCardImage} alt="Aadhar" className="feature-card-image" />
+                  )}
+                  <h3>{card.name}</h3>
+                  {card.id !== 'aadhar' && card.id !== 'expenses' && card.id !== 'aadhar-income' && <span className="feature-badge">Coming Soon</span>}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : selectedFeature === 'aadhar' ? (
+          <>
+            <div className="feature-page-head">
+              <button
+                type="button"
+                className="back-home-btn"
+                onClick={() => setSelectedFeature(null)}
+              >
+                Home
+              </button>
+              <h2>Aadhar</h2>
+            </div>
 
           {isAadharTable && (
             <div className="panel mode-panel">
@@ -1490,6 +2147,13 @@ function App() {
                 >
                   HO
                 </button>
+                <button
+                  type="button"
+                  className={aadharMode === 'bill' ? 'mode-btn active' : 'mode-btn'}
+                  onClick={() => setAadharMode('bill')}
+                >
+                  Bill
+                </button>
               </div>
 
               {aadharMode === 'entry' ? (
@@ -1506,11 +2170,11 @@ function App() {
                   <div className="month-amount-stack">
                     <div className="month-net-total">
                       <span>నికర మొత్తం</span>
-                      <strong>₹{Number.isFinite(monthNetTotal) ? monthNetTotal.toFixed(2) : '0.00'}</strong>
+                      <strong>₹{formatRupees(monthNetTotal)}</strong>
                     </div>
                   </div>
                 </div>
-              ) : (
+              ) : aadharMode === 'view' ? (
                 <div className="mode-month-stack">
                   <div className="mode-month-field">
                     <label htmlFor="view-fy">FY:</label>
@@ -1529,7 +2193,30 @@ function App() {
                   <div className="month-amount-stack">
                     <div className="month-ho-total">
                       <span>HO నికర మొత్తం</span>
-                      <strong>₹{Number.isFinite(hoNetAmount) ? hoNetAmount.toFixed(2) : '0.00'}</strong>
+                      <strong>₹{formatRupees(hoNetAmount)}</strong>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mode-month-stack">
+                  <div className="mode-month-field">
+                    <label htmlFor="bill-fy">FY:</label>
+                    <select
+                      id="bill-fy"
+                      value={viewFy}
+                      onChange={(event) => setViewFy(event.target.value)}
+                    >
+                      {fyOptions.map((year) => (
+                        <option key={year} value={String(year)}>
+                          {formatFinancialYear(year)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="month-amount-stack">
+                    <div className="month-bill-total">
+                      <span>Bill FY Total</span>
+                      <strong>₹{formatRupees(billFyYearTotal)}</strong>
                     </div>
                   </div>
                 </div>
@@ -1582,6 +2269,44 @@ function App() {
             </div>
           )}
 
+          {isAadharTable && isBillMode && (
+            <div className="panel bill-summary-card">
+              <div className="panel-head bill-card-head">
+                <h2>Bill Card</h2>
+                <p className="mode-hint">Month wise total bill for selected FY.</p>
+              </div>
+
+              {billFySummaryRows.length === 0 ? (
+                <p className="mode-hint">No bill data available yet.</p>
+              ) : (
+                <div className="fy-summary-table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Month</th>
+                        <th>Total Bill</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {billFySummaryRows.map((item) => (
+                        <tr key={`bill-${item.month}`}>
+                          <td>{formatMonthKey(item.month)}</td>
+                          <td>₹{formatRupees(item.operatorBill)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="fy-total-row">
+                        <td>Year Total</td>
+                        <td>₹{formatRupees(billFyYearTotal)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {isAadharTable && isViewMode ? (
           <div className="panel ho-summary-panel">
             <div className="fy-summary-table-wrap">
@@ -1600,9 +2325,9 @@ function App() {
                     <tr key={item.month}>
                       <td>{formatMonthKey(item.month)}</td>
                       <td>{item.enrollments.toFixed(2)}</td>
-                      <td>₹{item.sale.toFixed(2)}</td>
-                      <td>₹{item.paidAmount.toFixed(2)}</td>
-                      <td>₹{item.remaining.toFixed(2)}</td>
+                      <td>₹{formatRupees(item.sale)}</td>
+                      <td>₹{formatRupees(item.paidAmount)}</td>
+                      <td>₹{formatRupees(item.remaining)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1610,9 +2335,9 @@ function App() {
                   <tr className="fy-total-row">
                     <td>Year Total</td>
                     <td>{hoFyYearTotals.enrollments.toFixed(2)}</td>
-                    <td>₹{hoFyYearTotals.sale.toFixed(2)}</td>
-                    <td>₹{hoFyYearTotals.paidAmount.toFixed(2)}</td>
-                    <td>₹{hoFyYearTotals.remaining.toFixed(2)}</td>
+                    <td>₹{formatRupees(hoFyYearTotals.sale)}</td>
+                    <td>₹{formatRupees(hoFyYearTotals.paidAmount)}</td>
+                    <td>₹{formatRupees(hoFyYearTotals.remaining)}</td>
                   </tr>
                   <tr className="month-payment-row year-payment-row">
                     <td className="month-payment-label" colSpan={4}>
@@ -1665,7 +2390,7 @@ function App() {
               </table>
             </div>
           </div>
-          ) : (
+          ) : !isBillMode ? (
           <div className={aadharMode === 'view' ? 'sheet-wrap view-mode' : 'sheet-wrap'}>
             <table>
               <thead>
@@ -1674,12 +2399,13 @@ function App() {
                   {columns.map((column) => (
                     <th key={column}>{column}</th>
                   ))}
+                  {isAadharTable && aadharMode === 'entry' && <th>Lock Date</th>}
                 </tr>
               </thead>
               <tbody>
                 {visibleRows.length === 0 && (
                   <tr>
-                    <td colSpan={columns.length + 1} className="empty-row">
+                    <td colSpan={columns.length + (isAadharTable && aadharMode === 'entry' ? 2 : 1)} className="empty-row">
                       {isViewMode && !isViewMonthSubmitted
                         ? 'This month is not submitted yet. Submit it in Entry mode to view and export.'
                         : 'No records found for this month.'}
@@ -1691,7 +2417,8 @@ function App() {
                   const parsedDate = toDate(row.date)
                   const isSunday = parsedDate ? parsedDate.getDay() === 0 : false
                   const isEntrySundayLocked = isAadharTable && aadharMode === 'entry' && isSunday
-                  const isRowLocked = isAadharTable && lockedMonths.includes(row.date?.slice(0, 7))
+                  const isDateLocked = isAadharTable && lockedDateSet.has(row.date)
+                  const isRowLocked = isAadharTable && (lockedMonths.includes(row.date?.slice(0, 7)) || isDateLocked)
                   const isZeroRow = isAadharTable && aadharMode === 'entry' && isAllColumnsZero(row, columns)
                   const rowClassName = `${isSunday ? 'sunday-row ' : ''}${isRowLocked ? 'locked-row ' : ''}${isZeroRow ? 'zero-row' : ''}`.trim()
 
@@ -1753,6 +2480,17 @@ function App() {
                         )}
                       </td>
                     ))}
+                    {isAadharTable && aadharMode === 'entry' && (
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={isDateLocked}
+                          disabled={isEntrySundayLocked || !row.date}
+                          onChange={(event) => toggleDateLock(row.date, event.target.checked)}
+                          aria-label={`Lock ${row.date}`}
+                        />
+                      </td>
+                    )}
                   </tr>
                   )
                 })}
@@ -1764,6 +2502,9 @@ function App() {
                     {columns.map((column) => (
                       <td key={`total-${column}`} className="month-total-cell">{monthTotals[column] ?? '-'}</td>
                     ))}
+                    {isAadharTable && aadharMode === 'entry' && (
+                      <td className="month-total-cell">-</td>
+                    )}
                   </tr>
                   <tr className="month-payment-row">
                     <td className="month-payment-label">
@@ -1864,6 +2605,9 @@ function App() {
 
                       return <td key={`payment-empty-${column}`} className="month-payment-empty">-</td>
                     })}
+                    {isAadharTable && aadharMode === 'entry' && (
+                      <td className="month-payment-empty">-</td>
+                    )}
                   </tr>
                 </tfoot>
               )}
@@ -1876,7 +2620,7 @@ function App() {
               </div>
             )}
           </div>
-          )}
+          ) : null}
 
           {isAadharTable && aadharMode === 'entry' && (
             <div className="mode-submit-wrap table-end-submit">
@@ -1902,6 +2646,494 @@ function App() {
               )}
             </div>
           )}
+          </>
+        ) : selectedFeature === 'expenses' ? (
+          <>
+            <div className="feature-page-head">
+              <button
+                type="button"
+                className="back-home-btn"
+                onClick={() => setSelectedFeature(null)}
+              >
+                Home
+              </button>
+              <h2>Expenses</h2>
+            </div>
+
+            <div className="panel expenses-panel">
+              <div className="mode-toggle" role="tablist" aria-label="Expenses mode">
+                <button
+                  type="button"
+                  className={expenseMode === 'entry' ? 'mode-btn active' : 'mode-btn'}
+                  onClick={() => setExpenseMode('entry')}
+                >
+                  Entry
+                </button>
+                <button
+                  type="button"
+                  className={expenseMode === 'view' ? 'mode-btn active' : 'mode-btn'}
+                  onClick={() => setExpenseMode('view')}
+                >
+                  View
+                </button>
+              </div>
+
+              {isExpenseViewMode ? (
+                <div className="expenses-view-stack">
+                  <div className="expenses-controls">
+                    <div className="mode-month-field">
+                      <label htmlFor="expenses-view-fy">FY:</label>
+                      <select
+                        id="expenses-view-fy"
+                        value={expenseViewFy}
+                        onChange={(event) => setExpenseViewFy(event.target.value)}
+                      >
+                        {expenseViewFyOptions.map((year) => (
+                          <option key={year} value={String(year)}>
+                            {formatFinancialYear(year)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="sheet-wrap expenses-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Month</th>
+                          <th>Total Expenses</th>
+                          <th>Balance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expenseViewFyRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={3} className="empty-row">No submitted months in selected FY.</td>
+                          </tr>
+                        ) : (
+                          expenseViewFyRows.map((row) => (
+                            <tr key={row.month}>
+                              <td>{formatMonthKey(row.month)}</td>
+                              <td>₹{formatRupees(row.totalExpenses)}</td>
+                              <td className={row.balance < 0 ? 'expense-balance-negative' : 'expense-balance-positive'}>
+                                ₹{formatRupees(row.balance)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="expenses-controls">
+                    <div className="mode-month-field">
+                      <label htmlFor="expenses-month">Select Month:</label>
+                      <input
+                        id="expenses-month"
+                        type="month"
+                        value={expenseMonth}
+                        onChange={(event) => setExpenseMonth(event.target.value)}
+                      />
+                    </div>
+                    <button type="button" className="submit-month-btn" onClick={addExpenseRow} disabled={isExpenseMonthSubmitted}>
+                      +
+                    </button>
+                  </div>
+
+                  <div className="sheet-wrap expenses-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>S.No</th>
+                          <th>Item</th>
+                          <th>Amount</th>
+                          <th>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleExpenseRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="empty-row">No expenses for this month. Add a row to begin.</td>
+                          </tr>
+                        ) : (
+                          visibleExpenseRows.map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.sNo}</td>
+                              <td>
+                                <input
+                                  type="text"
+                                  value={row.item}
+                                  readOnly={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
+                                  onChange={(event) => updateExpenseCell(row.id, 'item', event.target.value)}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={row.amount}
+                                  readOnly={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
+                                  onChange={(event) => {
+                                    if (isExpenseViewMode || isExpenseMonthSubmitted || row.autoDeficitFrom) {
+                                      return
+                                    }
+                                    const nextValue = event.target.value
+                                    if (!/^\d*\.?\d*$/.test(nextValue)) {
+                                      return
+                                    }
+                                    updateExpenseCell(row.id, 'amount', nextValue)
+                                  }}
+                                  placeholder="0.00"
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="date"
+                                  value={row.date}
+                                  readOnly={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
+                                  onChange={(event) => updateExpenseCell(row.id, 'date', event.target.value)}
+                                />
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                      {visibleExpenseRows.length > 0 && (
+                        <tfoot>
+                          <tr className="month-total-row">
+                            <td colSpan={2} className="month-total-label expenses-lowercase-label">Salary</td>
+                            <td className="month-total-cell">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={salaryByMonth[expenseMonth] ?? ''}
+                                readOnly={isExpenseViewMode || isExpenseMonthSubmitted}
+                                onChange={(event) => {
+                                  if (isExpenseViewMode || isExpenseMonthSubmitted) {
+                                    return
+                                  }
+                                  const nextValue = event.target.value
+                                  if (!/^\d*\.?\d*$/.test(nextValue)) {
+                                    return
+                                  }
+                                  updateExpenseSalary(expenseMonth, nextValue)
+                                }}
+                                placeholder="0"
+                              />
+                            </td>
+                            <td className="month-total-cell">-</td>
+                          </tr>
+                          <tr className="month-total-row">
+                            <td colSpan={2} className="month-total-label expenses-lowercase-label">Other income</td>
+                            <td className="month-total-cell">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={otherIncomeByMonth[expenseMonth] ?? ''}
+                                readOnly={isExpenseViewMode || isExpenseMonthSubmitted}
+                                onChange={(event) => {
+                                  if (isExpenseViewMode || isExpenseMonthSubmitted) {
+                                    return
+                                  }
+                                  const nextValue = event.target.value
+                                  if (!/^\d*\.?\d*$/.test(nextValue)) {
+                                    return
+                                  }
+                                  updateExpenseOtherIncome(expenseMonth, nextValue)
+                                }}
+                                placeholder="0"
+                              />
+                            </td>
+                            <td className="month-total-cell">-</td>
+                          </tr>
+                          <tr className="month-total-row salary-row">
+                            <td colSpan={2} className="month-total-label expenses-lowercase-label">Month total</td>
+                            <td className="month-total-cell">₹{formatRupees(expenseMonthTotal)}</td>
+                            <td className="month-total-cell">-</td>
+                          </tr>
+                          {expenseMonthCarryAmount > 0 && (
+                            <tr className={expenseMonthCarryLabel === 'Surplus' ? 'month-total-row bank-balance-row' : 'month-total-row deficit-expense-row'}>
+                              <td colSpan={2} className="month-total-label expenses-lowercase-label">{expenseMonthCarryLabel}</td>
+                              <td className="month-total-cell">₹{formatRupees(expenseMonthCarryAmount)}</td>
+                              <td className="month-total-cell">-</td>
+                            </tr>
+                          )}
+                          <tr className={expenseMonthBalance < 0 ? 'month-total-row balance-row deficit' : 'month-total-row balance-row'}>
+                            <td colSpan={2} className="month-total-label expenses-lowercase-label">Balance</td>
+                            <td className="month-total-cell">₹{formatRupees(expenseMonthBalance)}</td>
+                            <td className="month-total-cell">
+                              {expenseMonthBalance !== 0
+                                ? isExpenseMonthSubmitted
+                                  ? `${expenseMonthBalance > 0 ? 'Surplus' : 'Deficit'} carried to ${getNextMonthKey(expenseMonth)}`
+                                  : 'Submit to carry forward'
+                                : '-'}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
+                  </div>
+
+                  <div className="mode-submit-wrap table-end-submit">
+                    <button
+                      type="button"
+                      className="submit-month-btn"
+                      onClick={submitExpenseMonth}
+                      disabled={isExpenseMonthSubmitted}
+                    >
+                      {isExpenseMonthSubmitted ? 'Submitted' : 'Submit Month'}
+                    </button>
+                    <span className={isExpenseMonthSubmitted ? 'mode-lock-badge locked' : 'mode-lock-badge'}>
+                      {isExpenseMonthSubmitted ? 'Locked' : 'Unlocked'}
+                    </span>
+                    {isExpenseMonthSubmitted && (
+                      <button
+                        type="button"
+                        className="unlock-month-btn"
+                        onClick={unlockExpenseMonth}
+                      >
+                        Unlock Month
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        ) : selectedFeature === 'aadhar-income' ? (
+          <>
+            <div className="feature-page-head">
+              <button
+                type="button"
+                className="back-home-btn"
+                onClick={() => setSelectedFeature(null)}
+              >
+                Home
+              </button>
+              <h2>Aadhar Income</h2>
+            </div>
+
+            <div className="panel expenses-panel">
+              <div className="expenses-mode-switch">
+                <button
+                  type="button"
+                  className={aadharIncomeMode === 'entry' ? 'mode-btn active' : 'mode-btn'}
+                  onClick={() => setAadharIncomeMode('entry')}
+                >
+                  Entry
+                </button>
+                <button
+                  type="button"
+                  className={aadharIncomeMode === 'view' ? 'mode-btn active' : 'mode-btn'}
+                  onClick={() => setAadharIncomeMode('view')}
+                >
+                  View
+                </button>
+              </div>
+
+              {aadharIncomeMode === 'view' ? (
+                <div className="sheet-stack">
+                  <div className="expenses-controls">
+                    <div className="mode-month-field">
+                      <label htmlFor="aadhar-income-view-fy">Select FY:</label>
+                      <select
+                        id="aadhar-income-view-fy"
+                        value={aadharIncomeViewFy}
+                        onChange={(event) => setAadharIncomeViewFy(event.target.value)}
+                      >
+                        {aadharIncomeViewFyOptions.map((year) => (
+                          <option key={year} value={String(year)}>{formatFinancialYear(year)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="sheet-wrap expenses-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Month</th>
+                          <th>Total income</th>
+                          <th>Total expenditure</th>
+                          <th>Balance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {aadharIncomeViewFyRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="empty-row">No submitted months in selected FY.</td>
+                          </tr>
+                        ) : (
+                          aadharIncomeViewFyRows.map((row) => (
+                            <tr key={row.month}>
+                              <td>{formatMonthKey(row.month)}</td>
+                              <td>₹{formatRupees(row.totalIncome)}</td>
+                              <td>₹{formatRupees(row.totalExpenditure)}</td>
+                              <td className={row.balance < 0 ? 'expense-balance-negative' : 'expense-balance-positive'}>
+                                ₹{formatRupees(row.balance)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="expenses-controls">
+                    <div className="mode-month-field">
+                      <label htmlFor="aadhar-income-month">Select Month:</label>
+                      <input
+                        id="aadhar-income-month"
+                        type="month"
+                        value={aadharIncomeMonth}
+                        onChange={(event) => setAadharIncomeMonth(event.target.value)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="submit-month-btn"
+                      onClick={addAadharIncomeRow}
+                      disabled={isAadharIncomeMonthSubmitted}
+                    >
+                      Add Row
+                    </button>
+                  </div>
+
+                  <div className="sheet-wrap expenses-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>S.No</th>
+                          <th>Date</th>
+                          <th>Name</th>
+                          <th>Type</th>
+                          <th>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleAadharIncomeRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="empty-row">No entries for this month. Add a row to begin.</td>
+                          </tr>
+                        ) : (
+                          visibleAadharIncomeRows.map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.sNo}</td>
+                              <td>
+                                <input
+                                  type="date"
+                                  value={row.date}
+                                  readOnly={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
+                                  onChange={(event) => updateAadharIncomeCell(row.id, 'date', event.target.value)}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="text"
+                                  value={row.name}
+                                  readOnly={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
+                                  onChange={(event) => updateAadharIncomeCell(row.id, 'name', event.target.value)}
+                                />
+                              </td>
+                              <td>
+                                <select
+                                  value={row.type || 'Income'}
+                                  disabled={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
+                                  onChange={(event) => updateAadharIncomeCell(row.id, 'type', event.target.value)}
+                                >
+                                  <option value="Income">Income</option>
+                                  <option value="Expense">Expense</option>
+                                </select>
+                              </td>
+                              <td>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={row.amount}
+                                  readOnly={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
+                                  onChange={(event) => {
+                                    if (isAadharIncomeViewMode || isAadharIncomeMonthSubmitted) {
+                                      return
+                                    }
+                                    const nextValue = event.target.value
+                                    if (!/^\d*\.?\d*$/.test(nextValue)) {
+                                      return
+                                    }
+                                    updateAadharIncomeCell(row.id, 'amount', nextValue)
+                                  }}
+                                />
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                      {visibleAadharIncomeRows.length > 0 && (
+                        <tfoot>
+                          <tr className="month-total-row">
+                            <td colSpan={3} className="month-total-label expenses-lowercase-label">Total income</td>
+                            <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthTotalIncome)}</td>
+                            <td className="month-total-cell">-</td>
+                          </tr>
+                          <tr className="month-total-row salary-row">
+                            <td colSpan={3} className="month-total-label expenses-lowercase-label">Total expenditure</td>
+                            <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthTotalExpenditure)}</td>
+                            <td className="month-total-cell">-</td>
+                          </tr>
+                          {aadharIncomeMonthCarryAmount > 0 && (
+                            <tr className={aadharIncomeMonthCarryLabel === 'Surplus' ? 'month-total-row bank-balance-row' : 'month-total-row deficit-expense-row'}>
+                              <td colSpan={3} className="month-total-label expenses-lowercase-label">Last month {aadharIncomeMonthCarryLabel}</td>
+                              <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthCarryAmount)}</td>
+                              <td className="month-total-cell">-</td>
+                            </tr>
+                          )}
+                          <tr className={aadharIncomeMonthBalance < 0 ? 'month-total-row balance-row deficit' : 'month-total-row balance-row'}>
+                            <td colSpan={3} className="month-total-label expenses-lowercase-label">Balance</td>
+                            <td className="month-total-cell">₹{formatRupees(Math.abs(aadharIncomeMonthBalance))}</td>
+                            <td className="month-total-cell">
+                              {aadharIncomeMonthBalance !== 0
+                                ? isAadharIncomeMonthSubmitted
+                                  ? `${aadharIncomeMonthBalance > 0 ? 'Surplus' : 'Deficit'} carried to ${getNextMonthKey(aadharIncomeMonth)}`
+                                  : 'Submit to carry forward'
+                                : '-'}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
+                  </div>
+
+                  <div className="mode-submit-wrap table-end-submit">
+                    <button
+                      type="button"
+                      className="submit-month-btn"
+                      onClick={submitAadharIncomeMonth}
+                      disabled={isAadharIncomeMonthSubmitted}
+                    >
+                      {isAadharIncomeMonthSubmitted ? 'Submitted' : 'Submit Month'}
+                    </button>
+                    <span className={isAadharIncomeMonthSubmitted ? 'mode-lock-badge locked' : 'mode-lock-badge'}>
+                      {isAadharIncomeMonthSubmitted ? 'Locked' : 'Unlocked'}
+                    </span>
+                    {isAadharIncomeMonthSubmitted && (
+                      <button
+                        type="button"
+                        className="unlock-month-btn"
+                        onClick={unlockAadharIncomeMonth}
+                      >
+                        Unlock Month
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        ) : null}
 
       </section>
 
