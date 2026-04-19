@@ -1,20 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { jsPDF } from 'jspdf'
-import autoTable from 'jspdf-autotable'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
-import * as XLSX from 'xlsx'
-import {
-  Cell,
-  Legend,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 import './App.css'
 import lavaLogo from './assets/lava.jpg'
 import { db } from './firebase'
@@ -24,14 +9,6 @@ const STORAGE_KEY_LEGACY = 'lavadevi-sheet-v1'
 const FIRESTORE_COLLECTION = 'appState'
 const FIRESTORE_DOC_ID = 'main'
 
-const FILTER_OPTIONS = [
-  { value: 'month', label: 'Month Wise' },
-  { value: 'sixMonths', label: 'Last 6 Months' },
-  { value: 'year', label: 'Last Year' },
-  { value: 'all', label: 'All' },
-]
-
-const PIE_COLORS = ['#10B981', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899']
 const DEFAULT_COLUMNS = ['Type', 'Amount', 'Description']
 const EMPTY_LIST = []
 
@@ -41,6 +18,30 @@ const REMOVED_TABLE_IDS = ['personal', 'shop']
 const BUILTIN_TABLES = [
   { id: 'aadhar', name: 'Aadhar' },
 ]
+
+let pdfToolsPromise
+let xlsxModulePromise
+
+async function loadPdfTools() {
+  if (!pdfToolsPromise) {
+    pdfToolsPromise = Promise.all([import('jspdf'), import('jspdf-autotable')]).then(
+      ([pdfModule, autoTableModule]) => ({
+        jsPDF: pdfModule.jsPDF,
+        autoTable: autoTableModule.default,
+      }),
+    )
+  }
+
+  return pdfToolsPromise
+}
+
+async function loadXlsxModule() {
+  if (!xlsxModulePromise) {
+    xlsxModulePromise = import('xlsx')
+  }
+
+  return xlsxModulePromise
+}
 
 // ----------------------------------------------------------------------
 // Image Compression Utility to prevent Firestore 1MB limits
@@ -536,22 +537,6 @@ function getMonthDates(monthValue) {
   })
 }
 
-function getPreviousMonthKey(monthValue) {
-  if (!/^\d{4}-\d{2}$/.test(monthValue)) {
-    return null
-  }
-
-  const [yearText, monthText] = monthValue.split('-')
-  const year = Number(yearText)
-  const month = Number(monthText)
-  if (!Number.isFinite(year) || !Number.isFinite(month)) {
-    return null
-  }
-
-  const previous = new Date(year, month - 2, 1)
-  return `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`
-}
-
 function getFinancialYearStartYear(dateValue) {
   const parsed = toDate(dateValue)
   if (!parsed) {
@@ -600,7 +585,11 @@ function isAllColumnsZero(row, tableColumns) {
   return tableColumns.every((column) => isZeroValue(row[column]))
 }
 
-function sortRowsByDate(rows) {
+function sortRowsByDate(rows, shouldSort = true) {
+  if (!shouldSort) {
+    return rows
+  }
+
   return [...rows].sort((a, b) => (a.date || '').localeCompare(b.date || ''))
 }
 
@@ -644,46 +633,13 @@ function getSignedAmount(row) {
   return row.Type === 'Income' ? amount : -amount
 }
 
-const CustomTooltip = ({ active, payload, label }) => {
-  if (active && payload && payload.length) {
-    return (
-      <div
-        style={{
-          background: '#111827',
-          border: 'none',
-          borderRadius: '8px',
-          padding: '12px 16px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-        }}
-      >
-        <p
-          style={{
-            margin: '0 0 8px',
-            color: '#9CA3AF',
-            fontSize: '12px',
-            fontWeight: '500',
-          }}
-        >
-          {label}
-        </p>
-        <p
-          style={{
-            margin: 0,
-            color: '#FFFFFF',
-            fontSize: '16px',
-            fontWeight: '700',
-          }}
-        >
-          ₹{payload[0].value.toFixed(2)}
-        </p>
-      </div>
-    )
-  }
-  return null
-}
-
 function App() {
   const [initialState] = useState(() => getInitialState())
+  const persistTimeoutRef = useRef(null)
+  const latestStateRef = useRef({
+    activeTableId: initialState.activeTableId,
+    tables: initialState.tables,
+  })
 
   const [trendFilter, setTrendFilter] = useState('all')
   const [tables, setTables] = useState(initialState.tables)
@@ -698,14 +654,56 @@ function App() {
   const [firestoreReady, setFirestoreReady] = useState(false)
 
   useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY_MULTI,
-      JSON.stringify({
-        activeTableId,
-        tables,
-      }),
-    )
+    latestStateRef.current = {
+      activeTableId,
+      tables,
+    }
+  }, [activeTableId, tables])
+
+  useEffect(() => {
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current)
+    }
+
+    persistTimeoutRef.current = window.setTimeout(() => {
+      const snapshot = latestStateRef.current
+
+      try {
+        localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(snapshot))
+      } catch (error) {
+        console.error('Failed to persist local data:', error)
+      }
+
+      if (firestoreReady) {
+        saveStateToFirestore(snapshot).catch((error) => {
+          console.error('Failed to save data to Firebase:', error)
+        })
+      }
+    }, 180)
+
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current)
+      }
+    }
   }, [activeTableId, firestoreReady, tables])
+
+  useEffect(() => {
+    const flushPersistedState = () => {
+      const snapshot = latestStateRef.current
+
+      try {
+        localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(snapshot))
+      } catch (error) {
+        console.error('Failed to persist local data:', error)
+      }
+    }
+
+    window.addEventListener('pagehide', flushPersistedState)
+    return () => {
+      window.removeEventListener('pagehide', flushPersistedState)
+    }
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -809,33 +807,6 @@ function App() {
     (selectedMonthPayment.remainingSubmitted ? monthRemainingTotal : 0)
   const monthNetTotal = monthNetBaseTotal - monthNetPaidTotal
 
-  const previousMonthNetTotal = useMemo(() => {
-    if (!isAadharTable || !selectedMonthKey) {
-      return 0
-    }
-
-    const previousMonthKey = getPreviousMonthKey(selectedMonthKey)
-    if (!previousMonthKey) {
-      return 0
-    }
-
-    const previousRows = rows.filter((row) => row.date?.slice(0, 7) === previousMonthKey)
-    const previousBillTotal = previousRows.reduce((sum, row) => sum + (Number(row.Bill) || 0), 0)
-    const previousRemainingTotal = previousRows.reduce(
-      (sum, row) => sum + (Number(row['Remaining amount']) || 0),
-      0,
-    )
-
-    const previousPayment = monthPayments[previousMonthKey] || {}
-    const previousPaid =
-      (previousPayment.billSubmitted ? previousBillTotal : 0) +
-      (previousPayment.remainingSubmitted ? previousRemainingTotal : 0)
-
-    return previousBillTotal + previousRemainingTotal - previousPaid
-  }, [isAadharTable, monthPayments, rows, selectedMonthKey])
-
-  const hoAmount = previousMonthNetTotal + monthNetTotal
-
   const monthTotals = useMemo(() => {
     const totals = {}
 
@@ -860,6 +831,10 @@ function App() {
   }, [columns, visibleRows])
 
   const fyOptions = useMemo(() => {
+    if (!isViewMode) {
+      return EMPTY_LIST
+    }
+
     const years = new Set([getFinancialYearStartYear(new Date().toISOString().slice(0, 10))])
     rows.forEach((row) => {
       if (row.date) {
@@ -880,10 +855,10 @@ function App() {
     }
 
     return expandedYears.reverse()
-  }, [rows])
+  }, [isViewMode, rows])
 
   const hoFySummaryRows = useMemo(() => {
-    if (!isAadharTable) {
+    if (!isViewMode) {
       return EMPTY_LIST
     }
 
@@ -945,7 +920,7 @@ function App() {
         remaining: sale - (currentRowPaidAmount + paymentDetailTotal),
       }
     })
-  }, [isAadharTable, monthPayments, rows, viewFy])
+  }, [isViewMode, monthPayments, rows, viewFy])
 
   const hoFyYearTotals = useMemo(() => {
     return hoFySummaryRows.reduce(
@@ -1008,26 +983,12 @@ function App() {
     })
   }, [aadharMode, entryMonth, isAadharTable, rows])
 
-  async function commitStateChange(nextTables, nextActiveTableId = activeTableId) {
-    if (!firestoreReady) {
-      setTables(nextTables)
-      setActiveTableId(nextActiveTableId)
-      return
-    }
-
-    try {
-      await saveStateToFirestore({
-        activeTableId: nextActiveTableId,
-        tables: nextTables,
-      })
-      setTables(nextTables)
-      setActiveTableId(nextActiveTableId)
-    } catch (error) {
-      console.error('Failed to save data to Firebase:', error)
-    }
+  function commitStateChange(nextTables, nextActiveTableId = activeTableId) {
+    setTables(nextTables)
+    setActiveTableId(nextActiveTableId)
   }
 
-  async function updateActiveTable(applyChanges) {
+  function updateActiveTable(applyChanges) {
     const nextTables = tables.map((table) => {
       if (table.id !== activeTableId) {
         return table
@@ -1035,7 +996,7 @@ function App() {
       return applyChanges(table)
     })
 
-    await commitStateChange(nextTables, activeTableId)
+    commitStateChange(nextTables, activeTableId)
   }
 
   function updateCell(rowId, key, value) {
@@ -1074,7 +1035,7 @@ function App() {
         }
 
         return updatedRow
-      })),
+      }), key === 'date'),
     }))
   }
 
@@ -1289,13 +1250,14 @@ function App() {
     })
   }
 
-  function exportToPDF() {
+  async function exportToPDF() {
     const baseRows = isAadharTable ? visibleRows : rows
     const filteredRows = getFilteredRowsByDate(baseRows, exportStartDate, exportEndDate)
     if (filteredRows.length === 0) {
       window.alert('No data to export for the selected date range.')
       return
     }
+    const { jsPDF, autoTable } = await loadPdfTools()
     const doc = new jsPDF()
     const tableName = activeTable?.name || 'Table'
     doc.setFontSize(18)
@@ -1329,13 +1291,14 @@ function App() {
     doc.save(`${tableName}_${new Date().toISOString().slice(0, 10)}.pdf`)
   }
 
-  function exportToExcel() {
+  async function exportToExcel() {
     const baseRows = isAadharTable ? visibleRows : rows
     const filteredRows = getFilteredRowsByDate(baseRows, exportStartDate, exportEndDate)
     if (filteredRows.length === 0) {
       window.alert('No data to export for the selected date range.')
       return
     }
+    const XLSX = await loadXlsxModule()
     const tableName = activeTable?.name || 'Table'
     const data = filteredRows.map((row) => {
       return {
@@ -1352,7 +1315,7 @@ function App() {
     XLSX.writeFile(wb, `${tableName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
-  function exportSelectedMonthToPDF() {
+  async function exportSelectedMonthToPDF() {
     if (!isAadharTable || isViewMode || !selectedMonthKey) {
       return
     }
@@ -1366,6 +1329,7 @@ function App() {
       return
     }
 
+    const { jsPDF, autoTable } = await loadPdfTools()
     const doc = new jsPDF()
     const tableName = activeTable?.name || 'Table'
     doc.setFontSize(16)
@@ -1388,7 +1352,7 @@ function App() {
     doc.save(`${tableName}_${selectedMonthKey}_${new Date().toISOString().slice(0, 10)}.pdf`)
   }
 
-  function exportSelectedMonthToExcel() {
+  async function exportSelectedMonthToExcel() {
     if (!isAadharTable || isViewMode || !selectedMonthKey) {
       return
     }
@@ -1402,6 +1366,7 @@ function App() {
       return
     }
 
+    const XLSX = await loadXlsxModule()
     const tableName = activeTable?.name || 'Table'
     const data = monthRows.map((row) => ({
       Date: row.date || '',
@@ -1417,7 +1382,7 @@ function App() {
     XLSX.writeFile(wb, `${tableName}_${selectedMonthKey}_${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
-  function exportFyToPDF() {
+  async function exportFyToPDF() {
     if (!isAadharTable || !isViewMode) {
       return
     }
@@ -1427,6 +1392,7 @@ function App() {
       return
     }
 
+    const { jsPDF, autoTable } = await loadPdfTools()
     const doc = new jsPDF()
     const fyLabel = formatFinancialYear(Number(viewFy))
 
@@ -1461,7 +1427,7 @@ function App() {
     doc.save(`Aadhar_HO_${fyLabel}_${new Date().toISOString().slice(0, 10)}.pdf`)
   }
 
-  function exportFyToExcel() {
+  async function exportFyToExcel() {
     if (!isAadharTable || !isViewMode) {
       return
     }
@@ -1471,6 +1437,7 @@ function App() {
       return
     }
 
+    const XLSX = await loadXlsxModule()
     const fyLabel = formatFinancialYear(Number(viewFy))
     const data = hoFySummaryRows.map((item) => ({
       Month: formatMonthKey(item.month),
