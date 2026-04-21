@@ -3,6 +3,9 @@ import { doc, getDoc, setDoc } from 'firebase/firestore'
 import './App.css'
 import lavaLogo from './assets/lava.jpg'
 import aadharCardImage from './assets/Aadhar.png'
+import expensesCardImage from './assets/Expenses.png'
+import aadharIncomeCardImage from './assets/Aincome.png'
+import cashCardImage from './assets/Cash.png'
 import { db } from './firebase'
 
 const STORAGE_KEY_MULTI = 'lavadevi-multi-sheet-v1'
@@ -17,7 +20,7 @@ const PERSIST_DEBOUNCE_MS = 700
 const DEFAULT_COLUMNS = ['Type', 'Amount', 'Description']
 const EMPTY_LIST = []
 
-const AADHAR_COLUMNS = ['Enrollments', 'Sale', 'Bill', 'Total', 'Paid amount', 'Remaining amount']
+const AADHAR_COLUMNS = ['Enrollments', 'Sale', 'Paid amount', 'Bill', 'Total', 'Remaining amount']
 const REMOVED_TABLE_IDS = ['personal', 'shop']
 
 const BUILTIN_TABLES = [
@@ -39,6 +42,11 @@ const HOME_FEATURE_CARDS = [
     id: 'aadhar-income',
     name: 'Aadhar Income',
     description: 'Track month-wise aadhar income and expense entries.',
+  },
+  {
+    id: 'cash',
+    name: 'Cash',
+    description: 'Track daily cash in and out entries with monthly summaries.',
   },
   {
     id: 'banking',
@@ -166,6 +174,15 @@ function normalizeDateValue(value) {
   return new Date().toISOString().slice(0, 10)
 }
 
+function getEntryDefaultDate(monthKey) {
+  const today = new Date().toISOString().slice(0, 10)
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+    return today
+  }
+
+  return monthKey === today.slice(0, 7) ? today : `${monthKey}-01`
+}
+
 function createRow(columns, serialNo) {
   const row = {
     id: crypto.randomUUID(),
@@ -202,9 +219,9 @@ function createExpenseRow(serialNo, dateValue = new Date().toISOString().slice(0
   }
 }
 
-function normalizeExpenseRows(rows) {
+function normalizeExpenseRows(rows, monthKey = new Date().toISOString().slice(0, 7)) {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return [createExpenseRow(1)]
+    return [createExpenseRow(1, getEntryDefaultDate(monthKey))]
   }
 
   return rows.map((row, index) => ({
@@ -220,7 +237,7 @@ function getInitialExpensesState() {
   const fallbackMonth = new Date().toISOString().slice(0, 7)
   const fallback = {
     selectedMonth: fallbackMonth,
-    rows: [createExpenseRow(1, `${fallbackMonth}-01`)],
+    rows: [createExpenseRow(1, getEntryDefaultDate(fallbackMonth))],
     salaryByMonth: {},
     otherIncomeByMonth: {},
     submittedMonths: {},
@@ -243,7 +260,7 @@ function getInitialExpensesState() {
 
     return {
       selectedMonth,
-      rows: normalizeExpenseRows(parsed?.rows),
+      rows: normalizeExpenseRows(parsed?.rows, selectedMonth),
       salaryByMonth: parsed?.salaryByMonth && typeof parsed.salaryByMonth === 'object' ? parsed.salaryByMonth : {},
       otherIncomeByMonth: parsed?.otherIncomeByMonth && typeof parsed.otherIncomeByMonth === 'object' ? parsed.otherIncomeByMonth : {},
       submittedMonths: parsed?.submittedMonths && typeof parsed.submittedMonths === 'object' ? parsed.submittedMonths : {},
@@ -265,9 +282,9 @@ function createAadharIncomeRow(serialNo, dateValue = new Date().toISOString().sl
   }
 }
 
-function normalizeAadharIncomeRows(rows) {
+function normalizeAadharIncomeRows(rows, monthKey = new Date().toISOString().slice(0, 7)) {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return [createAadharIncomeRow(1)]
+    return [createAadharIncomeRow(1, getEntryDefaultDate(monthKey))]
   }
 
   return rows.map((row, index) => ({
@@ -284,7 +301,7 @@ function getInitialAadharIncomeState() {
   const fallbackMonth = new Date().toISOString().slice(0, 7)
   const fallback = {
     selectedMonth: fallbackMonth,
-    rows: [createAadharIncomeRow(1, `${fallbackMonth}-01`)],
+    rows: [createAadharIncomeRow(1, getEntryDefaultDate(fallbackMonth))],
     submittedMonths: {},
   }
 
@@ -301,7 +318,7 @@ function getInitialAadharIncomeState() {
 
     return {
       selectedMonth,
-      rows: normalizeAadharIncomeRows(parsed?.rows),
+      rows: normalizeAadharIncomeRows(parsed?.rows, selectedMonth),
       submittedMonths: parsed?.submittedMonths && typeof parsed.submittedMonths === 'object' ? parsed.submittedMonths : {},
     }
   } catch {
@@ -544,11 +561,64 @@ function serializeStateForFirestore(state) {
       .filter((table) => table?.id !== undefined)
       .map((table) => [table.id, serializeTableForFirestore(table)]),
   )
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+
+  const expensesState = {
+    selectedMonth: /^\d{4}-\d{2}$/.test(state?.expensesState?.selectedMonth)
+      ? state.expensesState.selectedMonth
+      : fallbackMonth,
+    rows: normalizeExpenseRows(state?.expensesState?.rows, /^\d{4}-\d{2}$/.test(state?.expensesState?.selectedMonth) ? state.expensesState.selectedMonth : fallbackMonth),
+    salaryByMonth: state?.expensesState?.salaryByMonth && typeof state.expensesState.salaryByMonth === 'object'
+      ? state.expensesState.salaryByMonth
+      : {},
+    otherIncomeByMonth: state?.expensesState?.otherIncomeByMonth && typeof state.expensesState.otherIncomeByMonth === 'object'
+      ? state.expensesState.otherIncomeByMonth
+      : {},
+    submittedMonths: state?.expensesState?.submittedMonths && typeof state.expensesState.submittedMonths === 'object'
+      ? state.expensesState.submittedMonths
+      : {},
+  }
+
+  const aadharIncomeState = {
+    selectedMonth: /^\d{4}-\d{2}$/.test(state?.aadharIncomeState?.selectedMonth)
+      ? state.aadharIncomeState.selectedMonth
+      : fallbackMonth,
+    rows: normalizeAadharIncomeRows(state?.aadharIncomeState?.rows, /^\d{4}-\d{2}$/.test(state?.aadharIncomeState?.selectedMonth) ? state.aadharIncomeState.selectedMonth : fallbackMonth),
+    submittedMonths: state?.aadharIncomeState?.submittedMonths && typeof state.aadharIncomeState.submittedMonths === 'object'
+      ? state.aadharIncomeState.submittedMonths
+      : {},
+  }
 
   return {
     schemaVersion: 2,
     activeTableId: state.activeTableId ?? '',
     tablesById: Object.fromEntries(tablesById),
+    expensesState: sanitizeFirestoreValue(expensesState) || {},
+    aadharIncomeState: sanitizeFirestoreValue(aadharIncomeState) || {},
+  }
+}
+
+function deserializeExpensesStateFromFirestore(rawExpensesState) {
+  const source = rawExpensesState && typeof rawExpensesState === 'object' ? rawExpensesState : {}
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+
+  return {
+    selectedMonth: /^\d{4}-\d{2}$/.test(source.selectedMonth) ? source.selectedMonth : fallbackMonth,
+    rows: normalizeExpenseRows(source.rows, /^\d{4}-\d{2}$/.test(source.selectedMonth) ? source.selectedMonth : fallbackMonth),
+    salaryByMonth: source.salaryByMonth && typeof source.salaryByMonth === 'object' ? source.salaryByMonth : {},
+    otherIncomeByMonth: source.otherIncomeByMonth && typeof source.otherIncomeByMonth === 'object' ? source.otherIncomeByMonth : {},
+    submittedMonths: source.submittedMonths && typeof source.submittedMonths === 'object' ? source.submittedMonths : {},
+  }
+}
+
+function deserializeAadharIncomeStateFromFirestore(rawAadharIncomeState) {
+  const source = rawAadharIncomeState && typeof rawAadharIncomeState === 'object' ? rawAadharIncomeState : {}
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+
+  return {
+    selectedMonth: /^\d{4}-\d{2}$/.test(source.selectedMonth) ? source.selectedMonth : fallbackMonth,
+    rows: normalizeAadharIncomeRows(source.rows, /^\d{4}-\d{2}$/.test(source.selectedMonth) ? source.selectedMonth : fallbackMonth),
+    submittedMonths: source.submittedMonths && typeof source.submittedMonths === 'object' ? source.submittedMonths : {},
   }
 }
 
@@ -556,11 +626,12 @@ async function saveStateToFirestore(state) {
   const stateRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_DOC_ID)
   const serializedState = serializeStateForFirestore(state)
   const cleanTablesById = sanitizeData(serializedState.tablesById || {})
+  const updatedAt = new Date().toISOString()
   
   const rawPayload = {
     ...serializedState,
     tablesById: cleanTablesById,
-    updatedAt: new Date().toISOString(),
+    updatedAt,
   }
 
   // 1. Deep clone to drop proxies or undefined values
@@ -571,6 +642,7 @@ async function saveStateToFirestore(state) {
 
   await setDoc(stateRef, safePayload, { merge: true })
   console.log('Firestore save successful:', safePayload)
+  return updatedAt
 }
 
 function deserializeTableFromFirestore(tableId, storedTable) {
@@ -685,6 +757,46 @@ function formatMonth(date) {
   })
 }
 
+function formatDateDisplay(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) {
+    return ''
+  }
+
+  const [year, month, day] = String(value).split('-')
+  return `${day}-${month}-${year}`
+}
+
+function parseDateDisplay(value) {
+  if (!value) {
+    return ''
+  }
+
+  const match = String(value).trim().match(/^(\d{2})-(\d{2})-(\d{4})$/)
+  if (!match) {
+    return null
+  }
+
+  const [, dayText, monthText, yearText] = match
+  const day = Number(dayText)
+  const month = Number(monthText)
+  const year = Number(yearText)
+  if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) {
+    return null
+  }
+
+  const parsed = new Date(year, month - 1, day)
+  const isValid =
+    parsed.getFullYear() === year &&
+    parsed.getMonth() + 1 === month &&
+    parsed.getDate() === day
+
+  if (!isValid) {
+    return null
+  }
+
+  return `${yearText}-${monthText}-${dayText}`
+}
+
 function toDate(value) {
   if (!value) {
     return null
@@ -728,18 +840,151 @@ function getFinancialYearStartYear(dateValue) {
 }
 
 function formatMonthKey(monthKey) {
-  const parsed = toDate(`${monthKey}-01`)
-  if (!parsed) {
+  const match = String(monthKey || '').match(/^(\d{4})-(\d{2})$/)
+  if (!match) {
     return monthKey
   }
-  return parsed.toLocaleDateString('en-IN', {
-    month: 'short',
-    year: 'numeric',
-  })
+
+  const [, yearText, monthText] = match
+  const month = Number(monthText)
+  const monthNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ]
+
+  if (!Number.isFinite(month) || month < 1 || month > 12) {
+    return monthKey
+  }
+
+  return `${monthNames[month - 1]} ${yearText}`
+}
+
+function DateInputDMY({
+  id,
+  value,
+  onValueChange,
+  onComplete,
+  useNativeDatePicker,
+  className,
+  disabled,
+  readOnly,
+  required,
+  ariaLabel,
+}) {
+  const [draft, setDraft] = useState(formatDateDisplay(value))
+
+  useEffect(() => {
+    setDraft(formatDateDisplay(value))
+  }, [value])
+
+  function handleChange(event) {
+    const cleaned = event.target.value.replace(/[^\d-]/g, '').slice(0, 10)
+    setDraft(cleaned)
+
+    if (cleaned.length === 10) {
+      const parsed = parseDateDisplay(cleaned)
+      if (parsed !== null) {
+        onValueChange(parsed)
+      }
+    }
+  }
+
+  function handleBlur() {
+    if (disabled || readOnly) {
+      setDraft(formatDateDisplay(value))
+      onComplete?.(value)
+      return
+    }
+
+    if (!draft.trim()) {
+      onValueChange('')
+      setDraft('')
+      onComplete?.('')
+      return
+    }
+
+    const parsed = parseDateDisplay(draft)
+    if (parsed !== null) {
+      onValueChange(parsed)
+      setDraft(formatDateDisplay(parsed))
+      onComplete?.(parsed)
+      return
+    }
+
+    setDraft(formatDateDisplay(value))
+    onComplete?.(value)
+  }
+
+  function handleNativeDateChange(event) {
+    onValueChange(event.target.value)
+  }
+
+  function handleNativeDateBlur(event) {
+    onComplete?.(event.target.value)
+  }
+
+  if (useNativeDatePicker) {
+    return (
+      <input
+        id={id}
+        type="date"
+        value={value || ''}
+        className={className}
+        disabled={disabled}
+        readOnly={readOnly}
+        required={required}
+        aria-label={ariaLabel}
+        onChange={handleNativeDateChange}
+        onBlur={handleNativeDateBlur}
+      />
+    )
+  }
+
+  return (
+    <input
+      id={id}
+      type="text"
+      inputMode="numeric"
+      placeholder="dd-mm-yyyy"
+      pattern="\d{2}-\d{2}-\d{4}"
+      value={draft}
+      className={className}
+      disabled={disabled}
+      readOnly={readOnly}
+      required={required}
+      aria-label={ariaLabel}
+      onChange={handleChange}
+      onBlur={handleBlur}
+    />
+  )
 }
 
 function formatFinancialYear(startYear) {
   return `FY ${startYear}-${String(startYear + 1).slice(-2)}`
+}
+
+function formatSyncTimestamp(timestamp) {
+  const parsed = toDate(timestamp)
+  if (!parsed) {
+    return 'Not synced yet'
+  }
+
+  const day = String(parsed.getDate()).padStart(2, '0')
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const year = parsed.getFullYear()
+  const hours = String(parsed.getHours()).padStart(2, '0')
+  const minutes = String(parsed.getMinutes()).padStart(2, '0')
+  return `${day}-${month}-${year} ${hours}:${minutes}`
 }
 
 function formatRupees(value) {
@@ -772,6 +1017,36 @@ function isAllColumnsZero(row, tableColumns) {
     return false
   }
   return tableColumns.every((column) => isZeroValue(row[column]))
+}
+
+function isAadharIncomeRowZero(row) {
+  if (!row || typeof row !== 'object') {
+    return false
+  }
+
+  // Consider editable user-entered value columns for zero-row highlighting in Aadhar Income.
+  return isZeroValue(row.name) && isZeroValue(row.amount)
+}
+
+function isExpenseEntryRowComplete(row) {
+  if (!row || typeof row !== 'object') {
+    return false
+  }
+
+  return String(row.item ?? '').trim() !== ''
+    && String(row.amount ?? '').trim() !== ''
+    && String(row.date ?? '').trim() !== ''
+}
+
+function isAadharIncomeEntryRowComplete(row) {
+  if (!row || typeof row !== 'object') {
+    return false
+  }
+
+  return String(row.date ?? '').trim() !== ''
+    && String(row.name ?? '').trim() !== ''
+    && String(row.type ?? '').trim() !== ''
+    && String(row.amount ?? '').trim() !== ''
 }
 
 function sortRowsByDate(rows, shouldSort = true) {
@@ -830,6 +1105,8 @@ function App() {
   const latestStateRef = useRef({
     activeTableId: initialState.activeTableId,
     tables: initialState.tables,
+    expensesState: initialExpensesState,
+    aadharIncomeState: initialAadharIncomeState,
   })
 
   const [trendFilter, setTrendFilter] = useState('all')
@@ -843,6 +1120,7 @@ function App() {
   const [viewMonth, setViewMonth] = useState(new Date().toISOString().slice(0, 7))
   const [viewFy, setViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
   const [firestoreReady, setFirestoreReady] = useState(false)
+  const [lastSyncedAt, setLastSyncedAt] = useState('')
   const [selectedFeature, setSelectedFeature] = useState(null)
   const [expenseMonth, setExpenseMonth] = useState(initialExpensesState.selectedMonth)
   const [expenseViewFy, setExpenseViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
@@ -856,13 +1134,38 @@ function App() {
   const [submittedAadharIncomeMonths, setSubmittedAadharIncomeMonths] = useState(initialAadharIncomeState.submittedMonths || {})
   const [aadharIncomeMode, setAadharIncomeMode] = useState('entry')
   const [aadharIncomeViewFy, setAadharIncomeViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
+  const [newExpenseRowId, setNewExpenseRowId] = useState(null)
+  const [newAadharIncomeRowId, setNewAadharIncomeRowId] = useState(null)
 
   useEffect(() => {
     latestStateRef.current = {
       activeTableId,
       tables,
+      expensesState: {
+        selectedMonth: expenseMonth,
+        rows: expenseRows,
+        salaryByMonth,
+        otherIncomeByMonth,
+        submittedMonths: submittedExpenseMonths,
+      },
+      aadharIncomeState: {
+        selectedMonth: aadharIncomeMonth,
+        rows: aadharIncomeRows,
+        submittedMonths: submittedAadharIncomeMonths,
+      },
     }
-  }, [activeTableId, tables])
+  }, [
+    activeTableId,
+    aadharIncomeMonth,
+    aadharIncomeRows,
+    expenseMonth,
+    expenseRows,
+    otherIncomeByMonth,
+    salaryByMonth,
+    submittedAadharIncomeMonths,
+    submittedExpenseMonths,
+    tables,
+  ])
 
   useEffect(() => {
     if (persistTimeoutRef.current) {
@@ -871,17 +1174,25 @@ function App() {
 
     persistTimeoutRef.current = window.setTimeout(() => {
       const snapshot = latestStateRef.current
+      const localMultiSnapshot = {
+        activeTableId: snapshot.activeTableId,
+        tables: snapshot.tables,
+      }
 
       try {
-        localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(snapshot))
+        localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(localMultiSnapshot))
       } catch (error) {
         console.error('Failed to persist local data:', error)
       }
 
       if (firestoreReady) {
-        saveStateToFirestore(snapshot).catch((error) => {
-          console.error('Failed to save data to Firebase:', error)
-        })
+        saveStateToFirestore(snapshot)
+          .then((syncedAt) => {
+            setLastSyncedAt(syncedAt || new Date().toISOString())
+          })
+          .catch((error) => {
+            console.error('Failed to save data to Firebase:', error)
+          })
       }
     }, PERSIST_DEBOUNCE_MS)
 
@@ -890,14 +1201,30 @@ function App() {
         clearTimeout(persistTimeoutRef.current)
       }
     }
-  }, [activeTableId, firestoreReady, tables])
+  }, [
+    activeTableId,
+    aadharIncomeMonth,
+    aadharIncomeRows,
+    expenseMonth,
+    expenseRows,
+    firestoreReady,
+    otherIncomeByMonth,
+    salaryByMonth,
+    submittedAadharIncomeMonths,
+    submittedExpenseMonths,
+    tables,
+  ])
 
   useEffect(() => {
     const flushPersistedState = () => {
       const snapshot = latestStateRef.current
+      const localMultiSnapshot = {
+        activeTableId: snapshot.activeTableId,
+        tables: snapshot.tables,
+      }
 
       try {
-        localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(snapshot))
+        localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(localMultiSnapshot))
       } catch (error) {
         console.error('Failed to persist local data:', error)
       }
@@ -954,12 +1281,33 @@ function App() {
         }
 
         if (snapshot.exists()) {
-          const remoteState = deserializeFirestoreState(snapshot.data())
+          const remoteData = snapshot.data()
+          const remoteState = deserializeFirestoreState(remoteData)
+          const remoteExpensesState = deserializeExpensesStateFromFirestore(remoteData.expensesState)
+          const remoteAadharIncomeState = deserializeAadharIncomeStateFromFirestore(remoteData.aadharIncomeState)
+          setLastSyncedAt(String(remoteData.updatedAt || ''))
+
           setTables(remoteState.tables)
           setActiveTableId(remoteState.activeTableId)
+          setExpenseMonth(remoteExpensesState.selectedMonth)
+          setExpenseRows(remoteExpensesState.rows)
+          setSalaryByMonth(remoteExpensesState.salaryByMonth)
+          setOtherIncomeByMonth(remoteExpensesState.otherIncomeByMonth)
+          setSubmittedExpenseMonths(remoteExpensesState.submittedMonths)
+          setAadharIncomeMonth(remoteAadharIncomeState.selectedMonth)
+          setAadharIncomeRows(remoteAadharIncomeState.rows)
+          setSubmittedAadharIncomeMonths(remoteAadharIncomeState.submittedMonths)
+
           localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(remoteState))
+          localStorage.setItem(STORAGE_KEY_EXPENSES, JSON.stringify(remoteExpensesState))
+          localStorage.setItem(STORAGE_KEY_AADHAR_INCOME, JSON.stringify(remoteAadharIncomeState))
         } else {
-          await saveStateToFirestore(initialState)
+          const syncedAt = await saveStateToFirestore({
+            ...initialState,
+            expensesState: initialExpensesState,
+            aadharIncomeState: initialAadharIncomeState,
+          })
+          setLastSyncedAt(syncedAt || new Date().toISOString())
         }
       } catch (error) {
         console.error('Failed to initialize data in Firebase:', error)
@@ -975,7 +1323,7 @@ function App() {
     return () => {
       isMounted = false
     }
-  }, [initialState])
+  }, [initialAadharIncomeState, initialExpensesState, initialState])
 
   const activeTable = useMemo(() => {
     return tables.find((table) => table.id === activeTableId) || tables[0]
@@ -1309,6 +1657,19 @@ function App() {
   const isExpenseMonthSubmitted = Boolean(submittedExpenseMonths[expenseMonth])
   const isExpenseViewMode = expenseMode === 'view'
 
+  const cashCurrentMonthAadharRemaining = useMemo(() => {
+    if (!isAadharTable) {
+      return 0
+    }
+
+    return rows
+      .filter((row) => row.date?.slice(0, 7) === currentMonth)
+      .reduce((sum, row) => sum + (Number(row['Remaining amount']) || 0), 0)
+  }, [currentMonth, isAadharTable, rows])
+
+  const cashCurrentMonthExpenseBalance = Number(expenseMonthSummaryByMonth[currentMonth]?.balance || 0)
+  const cashCurrentMonthTotal = cashCurrentMonthAadharRemaining + cashCurrentMonthExpenseBalance
+
   const expenseViewFyOptions = useMemo(() => {
     const years = new Set([getFinancialYearStartYear(new Date().toISOString().slice(0, 10))])
     Object.keys(expenseMonthSummaryByMonth).forEach((monthKey) => {
@@ -1450,6 +1811,66 @@ function App() {
       }))
     })
   }, [])
+
+  useEffect(() => {
+    if (!newExpenseRowId) {
+      return
+    }
+    const timer = setTimeout(() => {
+      const titleInput = document.querySelector(`[data-expense-row-id="${newExpenseRowId}"] [data-expense-row-field="item"]`)
+      if (titleInput) {
+        titleInput.focus()
+      }
+      setNewExpenseRowId(null)
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [newExpenseRowId])
+
+  useEffect(() => {
+    if (!newAadharIncomeRowId) {
+      return
+    }
+    const timer = setTimeout(() => {
+      const nameInput = document.querySelector(`[data-aadhar-income-row-id="${newAadharIncomeRowId}"] [data-aadhar-income-row-field="name"]`)
+      if (nameInput) {
+        nameInput.focus()
+      }
+      setNewAadharIncomeRowId(null)
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [newAadharIncomeRowId])
+
+  useEffect(() => {
+    if (expenseMode !== 'entry') {
+      return
+    }
+
+    setExpenseRows((previousRows) => {
+      if (previousRows.some((row) => row.date?.slice(0, 7) === expenseMonth)) {
+        return previousRows
+      }
+
+      const newRow = createExpenseRow(previousRows.length + 1, getEntryDefaultDate(expenseMonth))
+      setNewExpenseRowId(newRow.id)
+      return [...previousRows, newRow].map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }, [expenseMode, expenseMonth])
+
+  useEffect(() => {
+    if (aadharIncomeMode !== 'entry') {
+      return
+    }
+
+    setAadharIncomeRows((previousRows) => {
+      if (previousRows.some((row) => row.date?.slice(0, 7) === aadharIncomeMonth)) {
+        return previousRows
+      }
+
+      const newRow = createAadharIncomeRow(previousRows.length + 1, getEntryDefaultDate(aadharIncomeMonth))
+      setNewAadharIncomeRowId(newRow.id)
+      return [...previousRows, newRow].map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }, [aadharIncomeMode, aadharIncomeMonth])
 
   useEffect(() => {
     if (!isAadharTable || aadharMode !== 'entry') {
@@ -1612,9 +2033,153 @@ function App() {
     }))
   }
 
+  function deleteExpenseRow(rowId) {
+    setExpenseRows((previousRows) => {
+      const filtered = previousRows.filter((row) => row.id !== rowId)
+      const hasCurrentMonthRow = filtered.some((row) => row.date?.slice(0, 7) === expenseMonth)
+      const nextRows = hasCurrentMonthRow ? filtered : [...filtered, createExpenseRow(filtered.length + 1, getEntryDefaultDate(expenseMonth))]
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function deleteAadharIncomeRow(rowId) {
+    setAadharIncomeRows((previousRows) => {
+      const filtered = previousRows.filter((row) => row.id !== rowId)
+      const hasCurrentMonthRow = filtered.some((row) => row.date?.slice(0, 7) === aadharIncomeMonth)
+      const nextRows = hasCurrentMonthRow ? filtered : [...filtered, createAadharIncomeRow(filtered.length + 1, getEntryDefaultDate(aadharIncomeMonth))]
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function maybeAppendExpenseRow(rowId, nextDate) {
+    setExpenseRows((previousRows) => {
+      const rowIndex = previousRows.findIndex((row) => row.id === rowId)
+      if (rowIndex === -1) {
+        return previousRows
+      }
+
+      const previousRow = previousRows[rowIndex]
+      const projectedRow = {
+        ...previousRow,
+        date: nextDate,
+      }
+
+      if (rowIndex !== previousRows.length - 1) {
+        return previousRows
+      }
+
+      if (String(previousRow.date ?? '').trim() !== '') {
+        return previousRows
+      }
+
+      if (!isExpenseEntryRowComplete(projectedRow)) {
+        return previousRows
+      }
+
+      const nextRows = [...previousRows, createExpenseRow(previousRows.length + 1, getEntryDefaultDate(expenseMonth))]
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function maybeAppendAadharIncomeRow(rowId, nextAmount) {
+    setAadharIncomeRows((previousRows) => {
+      const rowIndex = previousRows.findIndex((row) => row.id === rowId)
+      if (rowIndex === -1) {
+        return previousRows
+      }
+
+      const previousRow = previousRows[rowIndex]
+      const projectedRow = {
+        ...previousRow,
+        amount: nextAmount,
+      }
+
+      if (rowIndex !== previousRows.length - 1) {
+        return previousRows
+      }
+
+      if (String(previousRow.amount ?? '').trim() !== '') {
+        return previousRows
+      }
+
+      if (!isAadharIncomeEntryRowComplete(projectedRow)) {
+        return previousRows
+      }
+
+      const newRow = createAadharIncomeRow(previousRows.length + 1, getEntryDefaultDate(aadharIncomeMonth))
+      setNewAadharIncomeRowId(newRow.id)
+      const nextRows = [...previousRows, newRow]
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function maybeAppendExpenseRowFromAmount(rowId, nextAmount) {
+    setExpenseRows((previousRows) => {
+      const rowIndex = previousRows.findIndex((row) => row.id === rowId)
+      if (rowIndex === -1) {
+        return previousRows
+      }
+
+      const previousRow = previousRows[rowIndex]
+      const projectedRow = {
+        ...previousRow,
+        amount: nextAmount,
+      }
+
+      if (rowIndex !== previousRows.length - 1) {
+        return previousRows
+      }
+
+      if (String(previousRow.amount ?? '').trim() !== '') {
+        return previousRows
+      }
+
+      if (!isExpenseEntryRowComplete(projectedRow)) {
+        return previousRows
+      }
+
+      const newRow = createExpenseRow(previousRows.length + 1, getEntryDefaultDate(expenseMonth))
+      setNewExpenseRowId(newRow.id)
+      const nextRows = [...previousRows, newRow]
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function insertExpenseRowAfter(rowId) {
+    setExpenseRows((previousRows) => {
+      const rowIndex = previousRows.findIndex((row) => row.id === rowId)
+      if (rowIndex === -1) {
+        return previousRows
+      }
+
+      const sourceRow = previousRows[rowIndex]
+      const newRow = createExpenseRow(previousRows.length + 1, getEntryDefaultDate(expenseMonth))
+      const nextRows = [...previousRows]
+      nextRows.splice(rowIndex + 1, 0, newRow)
+      setNewExpenseRowId(newRow.id)
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function insertAadharIncomeRowAfter(rowId) {
+    setAadharIncomeRows((previousRows) => {
+      const rowIndex = previousRows.findIndex((row) => row.id === rowId)
+      if (rowIndex === -1) {
+        return previousRows
+      }
+
+      const sourceRow = previousRows[rowIndex]
+      const newRow = createAadharIncomeRow(previousRows.length + 1, getEntryDefaultDate(aadharIncomeMonth))
+      const nextRows = [...previousRows]
+      nextRows.splice(rowIndex + 1, 0, newRow)
+      setNewAadharIncomeRowId(newRow.id)
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
   function addAadharIncomeRow() {
     setAadharIncomeRows((previousRows) => {
-      const next = [...previousRows, createAadharIncomeRow(previousRows.length + 1, `${aadharIncomeMonth}-01`)]
+      const next = [...previousRows, createAadharIncomeRow(previousRows.length + 1, getEntryDefaultDate(aadharIncomeMonth))]
       return next.map((row, index) => ({ ...row, sNo: index + 1 }))
     })
   }
@@ -1651,7 +2216,7 @@ function App() {
 
   function addExpenseRow() {
     setExpenseRows((previousRows) => {
-      const next = [...previousRows, createExpenseRow(previousRows.length + 1, `${expenseMonth}-01`)]
+      const next = [...previousRows, createExpenseRow(previousRows.length + 1, getEntryDefaultDate(expenseMonth))]
       return next.map((row, index) => ({ ...row, sNo: index + 1 }))
     })
   }
@@ -1732,6 +2297,67 @@ function App() {
     }
   }
 
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+  }
+
+  function openPaymentImage(imageData, imageName = 'Payment Image') {
+    if (!imageData) {
+      return
+    }
+
+    const imageWindow = window.open('', '_blank', 'noopener,noreferrer')
+    if (!imageWindow) {
+      window.alert('Unable to open image preview. Please allow popups for this site.')
+      return
+    }
+
+    const safeTitle = escapeHtml(imageName)
+    imageWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${safeTitle}</title>
+          <style>
+            body {
+              margin: 0;
+              padding: 1rem;
+              font-family: Arial, sans-serif;
+              background: #0f172a;
+              color: #f8fafc;
+              display: grid;
+              gap: 0.75rem;
+              justify-items: center;
+            }
+            h1 {
+              margin: 0;
+              font-size: 1rem;
+              font-weight: 600;
+            }
+            img {
+              max-width: min(100%, 980px);
+              max-height: calc(100vh - 5rem);
+              border-radius: 10px;
+              box-shadow: 0 18px 32px rgba(15, 23, 42, 0.45);
+              background: #fff;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>${safeTitle}</h1>
+          <img src="${imageData}" alt="${safeTitle}" />
+        </body>
+      </html>
+    `)
+    imageWindow.document.close()
+  }
+
   function submitMonthPayment(target) {
     if (!isAadharTable || isViewMode || selectedMonthLocked) {
       return
@@ -1801,6 +2427,28 @@ function App() {
     }
 
     updateYearPayment(submittedField, true)
+  }
+
+  function unlockYearPayment(target) {
+    if (!isAadharTable || !isViewMode || !selectedYearKey) {
+      return
+    }
+
+    if (target !== 'remaining') {
+      return
+    }
+
+    if (!selectedYearPayment.remainingSubmitted) {
+      return
+    }
+
+    const fyLabel = formatFinancialYear(Number(selectedYearKey))
+    const shouldUnlock = window.confirm(`Unlock ${fyLabel} year payment? You can edit and submit again.`)
+    if (!shouldUnlock) {
+      return
+    }
+
+    updateYearPayment('remainingSubmitted', false)
   }
 
   function submitEntryMonth() {
@@ -2101,20 +2749,95 @@ function App() {
         {selectedFeature === null ? (
           <>
             <div className="feature-card-grid">
-              {HOME_FEATURE_CARDS.map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  className={card.id === 'aadhar' || card.id === 'expenses' || card.id === 'aadhar-income' ? 'feature-card active' : 'feature-card'}
-                  onClick={() => openFeature(card.id)}
-                >
-                  {card.id === 'aadhar' && (
-                    <img src={aadharCardImage} alt="Aadhar" className="feature-card-image" />
-                  )}
-                  <h3>{card.name}</h3>
-                  {card.id !== 'aadhar' && card.id !== 'expenses' && card.id !== 'aadhar-income' && <span className="feature-badge">Coming Soon</span>}
-                </button>
-              ))}
+              {HOME_FEATURE_CARDS.map((card) => {
+                if (card.id === 'aadhar') {
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      className="feature-image-only-btn"
+                      onClick={() => openFeature(card.id)}
+                      aria-label="Open Aadhar"
+                    >
+                      <img
+                        src={aadharCardImage}
+                        alt="Aadhar"
+                        className="feature-image-only"
+                      />
+                    </button>
+                  )
+                }
+
+                if (card.id === 'expenses') {
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      className="feature-image-only-btn"
+                      onClick={() => openFeature(card.id)}
+                      aria-label="Open Expenses"
+                    >
+                      <img
+                        src={expensesCardImage}
+                        alt="Expenses"
+                        className="feature-image-only"
+                      />
+                    </button>
+                  )
+                }
+
+                if (card.id === 'aadhar-income') {
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      className="feature-image-only-btn"
+                      onClick={() => openFeature(card.id)}
+                      aria-label="Open Aadhar Income"
+                    >
+                      <img
+                        src={aadharIncomeCardImage}
+                        alt="Aadhar Income"
+                        className="feature-image-only"
+                      />
+                    </button>
+                  )
+                }
+
+                if (card.id === 'cash') {
+                  return (
+                    <div
+                      key={card.id}
+                      className="feature-image-only-btn cash-feature-btn"
+                      aria-label="Cash"
+                    >
+                      <div className="feature-image-wrap">
+                        <img
+                          src={cashCardImage}
+                          alt="Cash"
+                          className="feature-image-only"
+                        />
+                        <div className="cash-card-total-overlay" aria-label="Current month cash total">
+                          <strong>₹{formatRupees(cashCurrentMonthTotal)}</strong>
+                          <p>{formatMonthKey(currentMonth)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                }
+
+                return (
+                  <button
+                    key={card.id}
+                    type="button"
+                    className={card.id === 'expenses' || card.id === 'aadhar-income' ? 'feature-card active' : 'feature-card'}
+                    onClick={() => openFeature(card.id)}
+                  >
+                    <h3>{card.name}</h3>
+                    {card.id !== 'expenses' && card.id !== 'aadhar-income' && <span className="feature-badge">Coming Soon</span>}
+                  </button>
+                )
+              })}
             </div>
           </>
         ) : selectedFeature === 'aadhar' ? (
@@ -2241,18 +2964,16 @@ function App() {
                   <div className="date-filters">
                     <div className="date-field">
                       <label>From Date:</label>
-                      <input
-                        type="date"
+                      <DateInputDMY
                         value={exportStartDate}
-                        onChange={(e) => setExportStartDate(e.target.value)}
+                        onValueChange={setExportStartDate}
                       />
                     </div>
                     <div className="date-field">
                       <label>To Date:</label>
-                      <input
-                        type="date"
+                      <DateInputDMY
                         value={exportEndDate}
-                        onChange={(e) => setExportEndDate(e.target.value)}
+                        onValueChange={setExportEndDate}
                       />
                     </div>
                   </div>
@@ -2260,8 +2981,8 @@ function App() {
                   {(exportStartDate || exportEndDate) && (
                     <p className="date-range-display">
                       Showing data from{' '}
-                      {exportStartDate || 'beginning'}:{' '}
-                      {exportEndDate || 'today'}
+                      {exportStartDate ? formatDateDisplay(exportStartDate) : 'beginning'} to{' '}
+                      {exportEndDate ? formatDateDisplay(exportEndDate) : 'today'}
                     </p>
                   )}
                 </div>
@@ -2350,6 +3071,16 @@ function App() {
                           Export FY Excel
                         </button>
                       </div>
+                      <div className="year-unlock-wrap">
+                        <button
+                          type="button"
+                          className="unlock-month-btn"
+                          disabled={!selectedYearPayment.remainingSubmitted}
+                          onClick={() => unlockYearPayment('remaining')}
+                        >
+                          Unlock FY
+                        </button>
+                      </div>
                     </td>
                     <td className="month-payment-cell">
                       <label className="payment-inline-check">
@@ -2361,18 +3092,33 @@ function App() {
                         />
                         Remaining Paid
                       </label>
-                      <input
-                        type="date"
+                      <DateInputDMY
                         value={selectedYearPayment.remainingPaidDate || ''}
                         disabled={!isViewMode || Boolean(selectedYearPayment.remainingSubmitted)}
-                        onChange={(event) => updateYearPayment('remainingPaidDate', event.target.value)}
+                        onValueChange={(nextValue) => updateYearPayment('remainingPaidDate', nextValue)}
                       />
-                      <input
-                        type="file"
-                        accept="image/*"
-                        disabled={!isViewMode || Boolean(selectedYearPayment.remainingSubmitted)}
-                        onChange={(event) => handleYearPaymentFileChange('remaining', event.target.files?.[0])}
-                      />
+                      <label className={!isViewMode || Boolean(selectedYearPayment.remainingSubmitted) ? 'payment-file-picker disabled' : 'payment-file-picker'}>
+                        <span className="payment-file-picker-btn">Choose File</span>
+                        <span className="payment-file-picker-name">
+                          {selectedYearPayment.remainingImageName || 'No file selected'}
+                        </span>
+                        <input
+                          className="payment-file-input"
+                          type="file"
+                          accept="image/*"
+                          disabled={!isViewMode || Boolean(selectedYearPayment.remainingSubmitted)}
+                          onChange={(event) => handleYearPaymentFileChange('remaining', event.target.files?.[0])}
+                        />
+                      </label>
+                      {selectedYearPayment.remainingImageData && (
+                        <button
+                          type="button"
+                          className="payment-view-btn"
+                          onClick={() => openPaymentImage(selectedYearPayment.remainingImageData, selectedYearPayment.remainingImageName || 'HO Remaining Paid')}
+                        >
+                          View
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="payment-submit-btn"
@@ -2425,12 +3171,11 @@ function App() {
                   return (
                   <tr key={row.id} className={rowClassName}>
                     <td>
-                      <input
-                        type="date"
+                      <DateInputDMY
                         value={row.date || ''}
                         className={row.date === currentDate ? 'today-date' : ''}
                         readOnly={(isAadharTable && aadharMode === 'entry') || isRowLocked || isEntrySundayLocked}
-                        onChange={(event) => updateCell(row.id, 'date', event.target.value)}
+                        onValueChange={(nextValue) => updateCell(row.id, 'date', nextValue)}
                         required
                       />
                     </td>
@@ -2533,18 +3278,33 @@ function App() {
                               />
                               Bill Paid
                             </label>
-                            <input
-                              type="date"
+                            <DateInputDMY
                               value={selectedMonthPayment.billPaidDate || ''}
                               disabled={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.billSubmitted)}
-                              onChange={(event) => updateMonthPayment('billPaidDate', event.target.value)}
+                              onValueChange={(nextValue) => updateMonthPayment('billPaidDate', nextValue)}
                             />
-                            <input
-                              type="file"
-                              accept="image/*"
-                              disabled={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.billSubmitted)}
-                              onChange={(event) => handlePaymentFileChange('bill', event.target.files?.[0])}
-                            />
+                            <label className={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.billSubmitted) ? 'payment-file-picker disabled' : 'payment-file-picker'}>
+                              <span className="payment-file-picker-btn">Choose File</span>
+                              <span className="payment-file-picker-name">
+                                {selectedMonthPayment.billImageName || 'No file selected'}
+                              </span>
+                              <input
+                                className="payment-file-input"
+                                type="file"
+                                accept="image/*"
+                                disabled={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.billSubmitted)}
+                                onChange={(event) => handlePaymentFileChange('bill', event.target.files?.[0])}
+                              />
+                            </label>
+                            {selectedMonthPayment.billImageData && (
+                              <button
+                                type="button"
+                                className="payment-view-btn"
+                                onClick={() => openPaymentImage(selectedMonthPayment.billImageData, selectedMonthPayment.billImageName || 'Bill Paid')}
+                              >
+                                View
+                              </button>
+                            )}
                             {!isViewMode && (
                               <button
                                 type="button"
@@ -2574,18 +3334,33 @@ function App() {
                               />
                               Remaining Paid
                             </label>
-                            <input
-                              type="date"
+                            <DateInputDMY
                               value={selectedMonthPayment.remainingPaidDate || ''}
                               disabled={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.remainingSubmitted)}
-                              onChange={(event) => updateMonthPayment('remainingPaidDate', event.target.value)}
+                              onValueChange={(nextValue) => updateMonthPayment('remainingPaidDate', nextValue)}
                             />
-                            <input
-                              type="file"
-                              accept="image/*"
-                              disabled={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.remainingSubmitted)}
-                              onChange={(event) => handlePaymentFileChange('remaining', event.target.files?.[0])}
-                            />
+                            <label className={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.remainingSubmitted) ? 'payment-file-picker disabled' : 'payment-file-picker'}>
+                              <span className="payment-file-picker-btn">Choose File</span>
+                              <span className="payment-file-picker-name">
+                                {selectedMonthPayment.remainingImageName || 'No file selected'}
+                              </span>
+                              <input
+                                className="payment-file-input"
+                                type="file"
+                                accept="image/*"
+                                disabled={isViewMode || selectedMonthLocked || Boolean(selectedMonthPayment.remainingSubmitted)}
+                                onChange={(event) => handlePaymentFileChange('remaining', event.target.files?.[0])}
+                              />
+                            </label>
+                            {selectedMonthPayment.remainingImageData && (
+                              <button
+                                type="button"
+                                className="payment-view-btn"
+                                onClick={() => openPaymentImage(selectedMonthPayment.remainingImageData, selectedMonthPayment.remainingImageName || 'Remaining Paid')}
+                              >
+                                View
+                              </button>
+                            )}
                             {!isViewMode && (
                               <button
                                 type="button"
@@ -2615,7 +3390,7 @@ function App() {
             {showExportControls && (exportStartDate || exportEndDate) && (
               <div className="table-footer">
                 <span>
-                  Date Filter: {exportStartDate || 'Beginning'} to {exportEndDate || 'Today'}
+                  Date Filter: {exportStartDate ? formatDateDisplay(exportStartDate) : 'Beginning'} to {exportEndDate ? formatDateDisplay(exportEndDate) : 'Today'}
                 </span>
               </div>
             )}
@@ -2738,9 +3513,6 @@ function App() {
                         onChange={(event) => setExpenseMonth(event.target.value)}
                       />
                     </div>
-                    <button type="button" className="submit-month-btn" onClick={addExpenseRow} disabled={isExpenseMonthSubmitted}>
-                      +
-                    </button>
                   </div>
 
                   <div className="sheet-wrap expenses-wrap">
@@ -2748,23 +3520,34 @@ function App() {
                       <thead>
                         <tr>
                           <th>S.No</th>
+                          <th>Date</th>
                           <th>Item</th>
                           <th>Amount</th>
-                          <th>Date</th>
+                          <th>Delete</th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleExpenseRows.length === 0 ? (
                           <tr>
-                            <td colSpan={4} className="empty-row">No expenses for this month. Add a row to begin.</td>
+                            <td colSpan={5} className="empty-row">No expenses for this month. Add a row to begin.</td>
                           </tr>
                         ) : (
                           visibleExpenseRows.map((row) => (
-                            <tr key={row.id}>
+                            <tr key={row.id} data-expense-row-id={row.id}>
                               <td>{row.sNo}</td>
+                              <td>
+                                <DateInputDMY
+                                  value={row.date}
+                                  readOnly={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
+                                  useNativeDatePicker
+                                  onValueChange={(nextValue) => updateExpenseCell(row.id, 'date', nextValue)}
+                                  onComplete={(nextValue) => maybeAppendExpenseRow(row.id, nextValue)}
+                                />
+                              </td>
                               <td>
                                 <input
                                   type="text"
+                                  data-expense-row-field="item"
                                   value={row.item}
                                   readOnly={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
                                   onChange={(event) => updateExpenseCell(row.id, 'item', event.target.value)}
@@ -2786,16 +3569,31 @@ function App() {
                                     }
                                     updateExpenseCell(row.id, 'amount', nextValue)
                                   }}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== 'Enter' || isExpenseViewMode || isExpenseMonthSubmitted || row.autoDeficitFrom) {
+                                      return
+                                    }
+                                    event.preventDefault()
+                                    insertExpenseRowAfter(row.id)
+                                  }}
                                   placeholder="0.00"
                                 />
                               </td>
                               <td>
-                                <input
-                                  type="date"
-                                  value={row.date}
-                                  readOnly={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
-                                  onChange={(event) => updateExpenseCell(row.id, 'date', event.target.value)}
-                                />
+                                <button
+                                  type="button"
+                                  className="row-delete-btn"
+                                  disabled={isExpenseViewMode || isExpenseMonthSubmitted || Boolean(row.autoDeficitFrom)}
+                                  onClick={() => deleteExpenseRow(row.id)}
+                                  aria-label="Delete expense row"
+                                >
+                                  <svg viewBox="0 0 24 24" className="row-delete-icon" aria-hidden="true" focusable="false">
+                                    <path
+                                      fill="currentColor"
+                                      d="M9 3a1 1 0 0 0-1 1v1H5a1 1 0 1 0 0 2h1v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7h1a1 1 0 1 0 0-2h-3V4a1 1 0 0 0-1-1H9zm1 2h4v1h-4V5zm-2 2h8v12H8V7zm2 2a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1zm4 0a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1z"
+                                    />
+                                  </svg>
+                                </button>
                               </td>
                             </tr>
                           ))
@@ -2825,6 +3623,7 @@ function App() {
                               />
                             </td>
                             <td className="month-total-cell">-</td>
+                            <td className="month-total-cell">-</td>
                           </tr>
                           <tr className="month-total-row">
                             <td colSpan={2} className="month-total-label expenses-lowercase-label">Other income</td>
@@ -2848,16 +3647,19 @@ function App() {
                               />
                             </td>
                             <td className="month-total-cell">-</td>
+                            <td className="month-total-cell">-</td>
                           </tr>
                           <tr className="month-total-row salary-row">
                             <td colSpan={2} className="month-total-label expenses-lowercase-label">Month total</td>
                             <td className="month-total-cell">₹{formatRupees(expenseMonthTotal)}</td>
+                            <td className="month-total-cell">-</td>
                             <td className="month-total-cell">-</td>
                           </tr>
                           {expenseMonthCarryAmount > 0 && (
                             <tr className={expenseMonthCarryLabel === 'Surplus' ? 'month-total-row bank-balance-row' : 'month-total-row deficit-expense-row'}>
                               <td colSpan={2} className="month-total-label expenses-lowercase-label">{expenseMonthCarryLabel}</td>
                               <td className="month-total-cell">₹{formatRupees(expenseMonthCarryAmount)}</td>
+                              <td className="month-total-cell">-</td>
                               <td className="month-total-cell">-</td>
                             </tr>
                           )}
@@ -2871,6 +3673,7 @@ function App() {
                                   : 'Submit to carry forward'
                                 : '-'}
                             </td>
+                            <td className="month-total-cell">-</td>
                           </tr>
                         </tfoot>
                       )}
@@ -3013,28 +3816,33 @@ function App() {
                           <th>Name</th>
                           <th>Type</th>
                           <th>Amount</th>
+                          <th>Delete</th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleAadharIncomeRows.length === 0 ? (
                           <tr>
-                            <td colSpan={5} className="empty-row">No entries for this month. Add a row to begin.</td>
+                            <td colSpan={6} className="empty-row">No entries for this month. Add a row to begin.</td>
                           </tr>
                         ) : (
-                          visibleAadharIncomeRows.map((row) => (
-                            <tr key={row.id}>
+                          visibleAadharIncomeRows.map((row) => {
+                            const isZeroRow = isAadharIncomeRowZero(row)
+
+                            return (
+                            <tr key={row.id} className={isZeroRow ? 'zero-row' : ''} data-aadhar-income-row-id={row.id}>
                               <td>{row.sNo}</td>
                               <td>
-                                <input
-                                  type="date"
+                                <DateInputDMY
                                   value={row.date}
                                   readOnly={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
-                                  onChange={(event) => updateAadharIncomeCell(row.id, 'date', event.target.value)}
+                                  useNativeDatePicker
+                                  onValueChange={(nextValue) => updateAadharIncomeCell(row.id, 'date', nextValue)}
                                 />
                               </td>
                               <td>
                                 <input
                                   type="text"
+                                  data-aadhar-income-row-field="name"
                                   value={row.name}
                                   readOnly={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
                                   onChange={(event) => updateAadharIncomeCell(row.id, 'name', event.target.value)}
@@ -3066,10 +3874,40 @@ function App() {
                                     }
                                     updateAadharIncomeCell(row.id, 'amount', nextValue)
                                   }}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== 'Enter' || isAadharIncomeViewMode || isAadharIncomeMonthSubmitted) {
+                                      return
+                                    }
+                                    event.preventDefault()
+                                    insertAadharIncomeRowAfter(row.id)
+                                  }}
+                                  onBlur={(event) => {
+                                    if (isAadharIncomeViewMode || isAadharIncomeMonthSubmitted) {
+                                      return
+                                    }
+                                    maybeAppendAadharIncomeRow(row.id, event.target.value)
+                                  }}
                                 />
                               </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="row-delete-btn"
+                                  disabled={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
+                                  onClick={() => deleteAadharIncomeRow(row.id)}
+                                  aria-label="Delete aadhar income row"
+                                >
+                                  <svg viewBox="0 0 24 24" className="row-delete-icon" aria-hidden="true" focusable="false">
+                                    <path
+                                      fill="currentColor"
+                                      d="M9 3a1 1 0 0 0-1 1v1H5a1 1 0 1 0 0 2h1v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7h1a1 1 0 1 0 0-2h-3V4a1 1 0 0 0-1-1H9zm1 2h4v1h-4V5zm-2 2h8v12H8V7zm2 2a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1zm4 0a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1z"
+                                    />
+                                  </svg>
+                                </button>
+                              </td>
                             </tr>
-                          ))
+                            )
+                          })
                         )}
                       </tbody>
                       {visibleAadharIncomeRows.length > 0 && (
@@ -3078,16 +3916,19 @@ function App() {
                             <td colSpan={3} className="month-total-label expenses-lowercase-label">Total income</td>
                             <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthTotalIncome)}</td>
                             <td className="month-total-cell">-</td>
+                            <td className="month-total-cell">-</td>
                           </tr>
                           <tr className="month-total-row salary-row">
                             <td colSpan={3} className="month-total-label expenses-lowercase-label">Total expenditure</td>
                             <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthTotalExpenditure)}</td>
+                            <td className="month-total-cell">-</td>
                             <td className="month-total-cell">-</td>
                           </tr>
                           {aadharIncomeMonthCarryAmount > 0 && (
                             <tr className={aadharIncomeMonthCarryLabel === 'Surplus' ? 'month-total-row bank-balance-row' : 'month-total-row deficit-expense-row'}>
                               <td colSpan={3} className="month-total-label expenses-lowercase-label">Last month {aadharIncomeMonthCarryLabel}</td>
                               <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthCarryAmount)}</td>
+                              <td className="month-total-cell">-</td>
                               <td className="month-total-cell">-</td>
                             </tr>
                           )}
@@ -3101,6 +3942,7 @@ function App() {
                                   : 'Submit to carry forward'
                                 : '-'}
                             </td>
+                            <td className="month-total-cell">-</td>
                           </tr>
                         </tfoot>
                       )}
@@ -3137,11 +3979,14 @@ function App() {
 
       </section>
 
-      <footer className="app-footer">
-        <div className="footer-card">
-          <p>© 2026 లావాదేవి All Rights Reserved</p>
-        </div>
-      </footer>
+      {selectedFeature === null && (
+        <footer className="app-footer">
+          <div className="footer-card">
+            <p>© 2026 లావాదేవి All Rights Reserved</p>
+            <p className="footer-sync-meta">Last synced: {formatSyncTimestamp(lastSyncedAt)}</p>
+          </div>
+        </footer>
+      )}
     </div>
   )
 }
