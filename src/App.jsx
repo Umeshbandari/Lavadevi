@@ -1,20 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import lavaLogo from './assets/lava.jpg'
 import aadharCardImage from './assets/Aadhar.png'
 import expensesCardImage from './assets/Expenses.png'
 import aadharIncomeCardImage from './assets/Aincome.png'
-import cashCardImage from './assets/Cash.png'
-import { db } from './firebase'
+import givenNotGivenCardImage from './assets/Given.png'
 
 const STORAGE_KEY_MULTI = 'lavadevi-multi-sheet-v1'
 const STORAGE_KEY_LEGACY = 'lavadevi-sheet-v1'
 const STORAGE_KEY_EXPENSES = 'lavadevi-expenses-v4'
 const STORAGE_KEY_AADHAR_INCOME = 'lavadevi-aadhar-income-v1'
+const STORAGE_KEY_GIVEN_NOT_GIVEN = 'lavadevi-given-not-given-v1'
 const LEGACY_EXPENSES_STORAGE_KEYS = ['lavadevi-expenses-v1', 'lavadevi-expenses-v2', 'lavadevi-expenses-v3']
-const FIRESTORE_COLLECTION = 'appState'
-const FIRESTORE_DOC_ID = 'main'
+const APPS_SCRIPT_STATE_API_URL = import.meta.env.VITE_GOOGLE_SHEETS_API_URL || ''
+const GIVEN_NOT_GIVEN_SHEET_API_URL =
+  import.meta.env.VITE_GIVEN_NOT_GIVEN_SHEET_API_URL || APPS_SCRIPT_STATE_API_URL
 const PERSIST_DEBOUNCE_MS = 700
 
 const DEFAULT_COLUMNS = ['Type', 'Amount', 'Description']
@@ -28,25 +28,21 @@ const BUILTIN_TABLES = [
 ]
 
 const HOME_FEATURE_CARDS = [
-  {
-    id: 'aadhar',
-    name: 'Aadhar',
-    description: 'Manage Operator entry, HO view, and Bill summaries.',
-  },
+  // Aadhar card removed from home features per request
   {
     id: 'expenses',
     name: 'Expenses',
     description: 'Track month-wise expense entries by item, amount, and date.',
   },
   {
+    id: 'given-not-given',
+    name: 'Given Not Given',
+    description: 'Track given and not given entries month-wise.',
+  },
+  {
     id: 'aadhar-income',
     name: 'Aadhar Income',
     description: 'Track month-wise aadhar income and expense entries.',
-  },
-  {
-    id: 'cash',
-    name: 'Cash',
-    description: 'Track daily cash in and out entries with monthly summaries.',
   },
   {
     id: 'banking',
@@ -85,7 +81,7 @@ async function loadXlsxModule() {
 }
 
 // ----------------------------------------------------------------------
-// Image Compression Utility to prevent Firestore 1MB limits
+// Image Compression Utility to prevent large payload issues
 // ----------------------------------------------------------------------
 function compressImageFile(file, maxWidth = 800, quality = 0.6) {
   return new Promise((resolve, reject) => {
@@ -117,7 +113,7 @@ function compressImageFile(file, maxWidth = 800, quality = 0.6) {
 }
 
 // ----------------------------------------------------------------------
-// Firestore Safeguard to strip massive strings (legacy uncompressed images)
+// Safeguard to strip massive strings (legacy uncompressed images)
 // ----------------------------------------------------------------------
 function stripOversizedStrings(obj) {
   if (typeof obj !== 'object' || obj === null) return obj;
@@ -125,9 +121,9 @@ function stripOversizedStrings(obj) {
 
   const result = {};
   for (const [key, value] of Object.entries(obj)) {
-    // 500KB limit for any single string to avoid breaking Firestore
+    // 500KB limit for any single string to avoid oversized request payloads
     if (typeof value === 'string' && value.length > 500000) {
-      console.warn(`Stripped massive string on key: ${key}. Firestore has a 1MB document limit.`);
+      console.warn(`Stripped massive string on key: ${key}.`);
       result[key] = ''; // Drop the massive string to save the rest of the DB
     } else if (typeof value === 'object') {
       result[key] = stripOversizedStrings(value);
@@ -279,6 +275,7 @@ function createAadharIncomeRow(serialNo, dateValue = new Date().toISOString().sl
     name: '',
     type: 'Income',
     amount: '',
+    excludeFromTotal: false,
   }
 }
 
@@ -294,6 +291,7 @@ function normalizeAadharIncomeRows(rows, monthKey = new Date().toISOString().sli
     name: String(row?.name ?? ''),
     type: row?.type === 'Expense' ? 'Expense' : 'Income',
     amount: String(row?.amount ?? ''),
+    excludeFromTotal: Boolean(row?.excludeFromTotal),
   }))
 }
 
@@ -324,6 +322,125 @@ function getInitialAadharIncomeState() {
   } catch {
     localStorage.removeItem(STORAGE_KEY_AADHAR_INCOME)
     return fallback
+  }
+}
+
+function createGivenNotGivenRow(serialNo, dateValue = new Date().toISOString().slice(0, 10)) {
+  return {
+    id: crypto.randomUUID(),
+    sNo: serialNo,
+    date: normalizeDateValue(dateValue),
+    name: '',
+    cellNo: '',
+    village: '',
+    amount: '',
+    type: 'Given',
+  }
+}
+
+function normalizeGivenNotGivenRows(rows, monthKey = new Date().toISOString().slice(0, 7)) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [createGivenNotGivenRow(1, getEntryDefaultDate(monthKey))]
+  }
+
+  return rows.map((row, index) => ({
+    id: row?.id || crypto.randomUUID(),
+    sNo: index + 1,
+    date: normalizeDateValue(row?.date),
+    name: String(row?.name ?? ''),
+    cellNo: String(row?.cellNo ?? row?.cellno ?? ''),
+    village: String(row?.village ?? row?.villageName ?? ''),
+    amount: String(row?.amount ?? ''),
+    type: row?.type === 'Not Given' ? 'Not Given' : 'Given',
+  }))
+}
+
+function getInitialGivenNotGivenState() {
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+  const fallback = {
+    selectedMonth: fallbackMonth,
+    rows: [createGivenNotGivenRow(1, getEntryDefaultDate(fallbackMonth))],
+  }
+
+  const raw = localStorage.getItem(STORAGE_KEY_GIVEN_NOT_GIVEN)
+  if (!raw) {
+    return fallback
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    const selectedMonth = /^\d{4}-\d{2}$/.test(parsed?.selectedMonth)
+      ? parsed.selectedMonth
+      : fallbackMonth
+
+    return {
+      selectedMonth,
+      rows: normalizeGivenNotGivenRows(parsed?.rows, selectedMonth),
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEY_GIVEN_NOT_GIVEN)
+    return fallback
+  }
+}
+
+function normalizeGivenNotGivenSheetRows(payload) {
+  const source = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.rows)
+      ? payload.rows
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : []
+
+  return normalizeGivenNotGivenRows(source)
+}
+
+function getGivenNotGivenSignedAmount(row) {
+  const amount = Number(row?.amount)
+  if (!Number.isFinite(amount)) {
+    return 0
+  }
+
+  return row?.type === 'Not Given' ? -amount : amount
+}
+
+async function loadGivenNotGivenSheet(onRows, onStatus, onError, onMonth) {
+  if (!GIVEN_NOT_GIVEN_SHEET_API_URL) {
+    onStatus('error')
+    onError('Missing VITE_GIVEN_NOT_GIVEN_SHEET_API_URL or VITE_GOOGLE_SHEETS_API_URL in .env')
+    return
+  }
+
+  onStatus('loading')
+  onError('')
+
+  try {
+    const response = await fetch(GIVEN_NOT_GIVEN_SHEET_API_URL)
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`)
+    }
+
+    const contentType = response.headers.get('content-type') || ''
+    const redirectedToLogin = response.url.includes('accounts.google.com')
+    if (redirectedToLogin || contentType.includes('text/html')) {
+      throw new Error('Google returned a login page instead of sheet data. Open the Apps Script deployment, set access to Anyone, and redeploy the web app so the URL returns JSON.')
+    }
+
+    const data = await response.json()
+    const nextRows = normalizeGivenNotGivenSheetRows(data)
+    if (nextRows.length > 0) {
+      onRows(nextRows)
+      const inferredMonth = getDateMonthKey(nextRows[0]?.date)
+      if (inferredMonth) {
+        onMonth(inferredMonth)
+      }
+    }
+
+    onStatus('ready')
+  } catch (error) {
+    console.error('Failed to load Given Not Given sheet:', error)
+    onStatus('error')
+    onError(error instanceof Error ? error.message : 'Unable to load Google Sheet')
   }
 }
 
@@ -589,12 +706,23 @@ function serializeStateForFirestore(state) {
       : {},
   }
 
+  const givenNotGivenState = {
+    selectedMonth: /^\d{4}-\d{2}$/.test(state?.givenNotGivenState?.selectedMonth)
+      ? state.givenNotGivenState.selectedMonth
+      : fallbackMonth,
+    rows: normalizeGivenNotGivenRows(
+      state?.givenNotGivenState?.rows,
+      /^\d{4}-\d{2}$/.test(state?.givenNotGivenState?.selectedMonth) ? state.givenNotGivenState.selectedMonth : fallbackMonth,
+    ),
+  }
+
   return {
     schemaVersion: 2,
     activeTableId: state.activeTableId ?? '',
     tablesById: Object.fromEntries(tablesById),
     expensesState: sanitizeFirestoreValue(expensesState) || {},
     aadharIncomeState: sanitizeFirestoreValue(aadharIncomeState) || {},
+    givenNotGivenState: sanitizeFirestoreValue(givenNotGivenState) || {},
   }
 }
 
@@ -622,8 +750,62 @@ function deserializeAadharIncomeStateFromFirestore(rawAadharIncomeState) {
   }
 }
 
+function deserializeGivenNotGivenStateFromFirestore(rawGivenNotGivenState) {
+  const source = rawGivenNotGivenState && typeof rawGivenNotGivenState === 'object' ? rawGivenNotGivenState : {}
+  const fallbackMonth = new Date().toISOString().slice(0, 7)
+
+  return {
+    selectedMonth: /^\d{4}-\d{2}$/.test(source.selectedMonth) ? source.selectedMonth : fallbackMonth,
+    rows: normalizeGivenNotGivenRows(source.rows, /^\d{4}-\d{2}$/.test(source.selectedMonth) ? source.selectedMonth : fallbackMonth),
+  }
+}
+
+// Format row data for Google Sheets to prevent auto-formatting
+function formatRowDataForGoogleSheets(row) {
+  if (!row || typeof row !== 'object') {
+    return row
+  }
+
+  const formatted = { ...row }
+
+  // Add single quote prefix to dates to force text display
+  if (formatted.date && typeof formatted.date === 'string') {
+    formatted.date = `'${formatted.date}`
+  }
+
+  // Convert boolean fields to TRUE/FALSE strings for Google Sheets
+  if (formatted.isLocked !== undefined && formatted.isLocked !== null) {
+    formatted.isLocked = formatted.isLocked ? 'TRUE' : 'FALSE'
+  }
+
+  return formatted
+}
+
+// Format all rows in tablesById for Google Sheets
+function formatStateForGoogleSheets(state) {
+  if (!state || !state.tablesById || typeof state.tablesById !== 'object') {
+    return state
+  }
+
+  const formattedState = JSON.parse(JSON.stringify(state))
+
+  Object.keys(formattedState.tablesById).forEach((tableId) => {
+    const table = formattedState.tablesById[tableId]
+    if (table && table.rowsById && typeof table.rowsById === 'object') {
+      Object.keys(table.rowsById).forEach((rowId) => {
+        table.rowsById[rowId] = formatRowDataForGoogleSheets(table.rowsById[rowId])
+      })
+    }
+  })
+
+  return formattedState
+}
+
 async function saveStateToFirestore(state) {
-  const stateRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_DOC_ID)
+  if (!APPS_SCRIPT_STATE_API_URL) {
+    throw new Error('Missing VITE_GOOGLE_SHEETS_API_URL in .env')
+  }
+
   const serializedState = serializeStateForFirestore(state)
   const cleanTablesById = sanitizeData(serializedState.tablesById || {})
   const updatedAt = new Date().toISOString()
@@ -637,12 +819,79 @@ async function saveStateToFirestore(state) {
   // 1. Deep clone to drop proxies or undefined values
   const cleanPayload = JSON.parse(JSON.stringify(rawPayload))
   
-  // 2. Strip oversized base64 images that break Firestore
+  // 2. Strip oversized base64 strings to keep requests lightweight
   const safePayload = stripOversizedStrings(cleanPayload)
+  
+  // 3. Format dates and booleans for Google Sheets
+  const googleSheetsPayload = formatStateForGoogleSheets(safePayload)
 
-  await setDoc(stateRef, safePayload, { merge: true })
-  console.log('Firestore save successful:', safePayload)
+  const response = await fetch(APPS_SCRIPT_STATE_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain;charset=utf-8',
+    },
+    body: JSON.stringify({
+      action: 'saveAppState',
+      state: googleSheetsPayload,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Google Apps Script save failed with status ${response.status}`)
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  const redirectedToLogin = response.url.includes('accounts.google.com')
+  if (redirectedToLogin || contentType.includes('text/html')) {
+    throw new Error('Google returned an HTML page. Set Apps Script web app access to Anyone and redeploy.')
+  }
+
+  const result = await response.json()
+  if (result?.status && result.status !== 'success') {
+    throw new Error(result?.message || 'Google Apps Script returned an error while saving state')
+  }
+
+  console.log('Google Sheets sync save successful:', googleSheetsPayload)
   return updatedAt
+}
+
+async function fetchRemoteStateFromGoogleSheets() {
+  if (!APPS_SCRIPT_STATE_API_URL) {
+    return null
+  }
+
+  const response = await fetch(APPS_SCRIPT_STATE_API_URL, { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(`Google Apps Script load failed with status ${response.status}`)
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  const redirectedToLogin = response.url.includes('accounts.google.com')
+  if (redirectedToLogin || contentType.includes('text/html')) {
+    throw new Error('Google returned an HTML page. Set Apps Script web app access to Anyone and redeploy.')
+  }
+
+  const payload = await response.json()
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  const candidate = payload?.state && typeof payload.state === 'object'
+    ? payload.state
+    : payload?.data && typeof payload.data === 'object'
+      ? payload.data
+      : payload
+
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null
+  }
+
+  const looksLikeAppState =
+    Object.prototype.hasOwnProperty.call(candidate, 'tables') ||
+    Object.prototype.hasOwnProperty.call(candidate, 'tablesById') ||
+    Object.prototype.hasOwnProperty.call(candidate, 'expensesState')
+
+  return looksLikeAppState ? candidate : null
 }
 
 function deserializeTableFromFirestore(tableId, storedTable) {
@@ -987,6 +1236,26 @@ function formatSyncTimestamp(timestamp) {
   return `${day}-${month}-${year} ${hours}:${minutes}`
 }
 
+function getSyncStatusLabel(syncState, syncErrorMessage) {
+  if (syncState === 'saving') {
+    return 'Sync status: Saving to sheet...'
+  }
+
+  if (syncState === 'saved') {
+    return 'Sync status: Saved to sheet'
+  }
+
+  if (syncState === 'error') {
+    return `Sync status: Failed${syncErrorMessage ? ` (${syncErrorMessage})` : ''}`
+  }
+
+  if (syncState === 'disabled') {
+    return 'Sync status: Disabled (missing API URL)'
+  }
+
+  return 'Sync status: Ready'
+}
+
 function formatRupees(value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) {
@@ -1049,6 +1318,15 @@ function isAadharIncomeEntryRowComplete(row) {
     && String(row.amount ?? '').trim() !== ''
 }
 
+function getAadharIncomeRowTotalContribution(row) {
+  if (!row || typeof row !== 'object' || row.excludeFromTotal) {
+    return 0
+  }
+
+  const amount = Number(row.amount)
+  return Number.isFinite(amount) ? amount : 0
+}
+
 function sortRowsByDate(rows, shouldSort = true) {
   if (!shouldSort) {
     return rows
@@ -1101,12 +1379,14 @@ function App() {
   const [initialState] = useState(() => getInitialState())
   const [initialExpensesState] = useState(() => getInitialExpensesState())
   const [initialAadharIncomeState] = useState(() => getInitialAadharIncomeState())
+  const [initialGivenNotGivenState] = useState(() => getInitialGivenNotGivenState())
   const persistTimeoutRef = useRef(null)
   const latestStateRef = useRef({
     activeTableId: initialState.activeTableId,
     tables: initialState.tables,
     expensesState: initialExpensesState,
     aadharIncomeState: initialAadharIncomeState,
+    givenNotGivenState: initialGivenNotGivenState,
   })
 
   const [trendFilter, setTrendFilter] = useState('all')
@@ -1121,6 +1401,8 @@ function App() {
   const [viewFy, setViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
   const [firestoreReady, setFirestoreReady] = useState(false)
   const [lastSyncedAt, setLastSyncedAt] = useState('')
+  const [syncState, setSyncState] = useState(APPS_SCRIPT_STATE_API_URL ? 'ready' : 'disabled')
+  const [syncErrorMessage, setSyncErrorMessage] = useState('')
   const [selectedFeature, setSelectedFeature] = useState(null)
   const [expenseMonth, setExpenseMonth] = useState(initialExpensesState.selectedMonth)
   const [expenseViewFy, setExpenseViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
@@ -1129,12 +1411,16 @@ function App() {
   const [otherIncomeByMonth, setOtherIncomeByMonth] = useState(initialExpensesState.otherIncomeByMonth || {})
   const [submittedExpenseMonths, setSubmittedExpenseMonths] = useState(initialExpensesState.submittedMonths || {})
   const [expenseMode, setExpenseMode] = useState('entry')
+  const [givenNotGivenMonth, setGivenNotGivenMonth] = useState(initialGivenNotGivenState.selectedMonth)
+  const [givenNotGivenRows, setGivenNotGivenRows] = useState(initialGivenNotGivenState.rows)
+  
   const [aadharIncomeMonth, setAadharIncomeMonth] = useState(initialAadharIncomeState.selectedMonth)
   const [aadharIncomeRows, setAadharIncomeRows] = useState(initialAadharIncomeState.rows)
   const [submittedAadharIncomeMonths, setSubmittedAadharIncomeMonths] = useState(initialAadharIncomeState.submittedMonths || {})
   const [aadharIncomeMode, setAadharIncomeMode] = useState('entry')
   const [aadharIncomeViewFy, setAadharIncomeViewFy] = useState(String(getFinancialYearStartYear(new Date().toISOString().slice(0, 10))))
   const [newExpenseRowId, setNewExpenseRowId] = useState(null)
+  const [newGivenNotGivenRowId, setNewGivenNotGivenRowId] = useState(null)
   const [newAadharIncomeRowId, setNewAadharIncomeRowId] = useState(null)
 
   useEffect(() => {
@@ -1148,6 +1434,10 @@ function App() {
         otherIncomeByMonth,
         submittedMonths: submittedExpenseMonths,
       },
+      givenNotGivenState: {
+        selectedMonth: givenNotGivenMonth,
+        rows: givenNotGivenRows,
+      },
       aadharIncomeState: {
         selectedMonth: aadharIncomeMonth,
         rows: aadharIncomeRows,
@@ -1158,6 +1448,8 @@ function App() {
     activeTableId,
     aadharIncomeMonth,
     aadharIncomeRows,
+    givenNotGivenMonth,
+    givenNotGivenRows,
     expenseMonth,
     expenseRows,
     otherIncomeByMonth,
@@ -1166,6 +1458,29 @@ function App() {
     submittedExpenseMonths,
     tables,
   ])
+
+  const handleManualSave = async () => {
+    if (!firestoreReady || syncState === 'saving') {
+      return
+    }
+
+    const snapshot = latestStateRef.current
+    setSyncState('saving')
+    setSyncErrorMessage('')
+
+    try {
+      const syncedAt = await saveStateToFirestore(snapshot)
+      setLastSyncedAt(syncedAt || new Date().toISOString())
+      setSyncState('saved')
+      window.alert('✓ Data saved successfully to Google Sheets!')
+    } catch (error) {
+      console.error('Failed to save data to Google Sheets:', error)
+      setSyncState('error')
+      const errorMsg = error instanceof Error ? error.message : 'Unable to save data'
+      setSyncErrorMessage(errorMsg)
+      window.alert(`✗ Save failed: ${errorMsg}`)
+    }
+  }
 
   useEffect(() => {
     if (persistTimeoutRef.current) {
@@ -1186,12 +1501,17 @@ function App() {
       }
 
       if (firestoreReady) {
+        setSyncState('saving')
+        setSyncErrorMessage('')
         saveStateToFirestore(snapshot)
           .then((syncedAt) => {
             setLastSyncedAt(syncedAt || new Date().toISOString())
+            setSyncState('saved')
           })
           .catch((error) => {
-            console.error('Failed to save data to Firebase:', error)
+            console.error('Failed to save data to Google Sheets:', error)
+            setSyncState('error')
+            setSyncErrorMessage(error instanceof Error ? error.message : 'Unable to save data')
           })
       }
     }, PERSIST_DEBOUNCE_MS)
@@ -1269,23 +1589,38 @@ function App() {
   }, [aadharIncomeMonth, aadharIncomeRows, submittedAadharIncomeMonths])
 
   useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY_GIVEN_NOT_GIVEN,
+        JSON.stringify({
+          selectedMonth: givenNotGivenMonth,
+          rows: givenNotGivenRows,
+        }),
+      )
+    } catch (error) {
+      console.error('Failed to persist given/not given data:', error)
+    }
+  }, [givenNotGivenMonth, givenNotGivenRows])
+
+  useEffect(() => {
     let isMounted = true
 
     async function loadRemoteState() {
       try {
-        const stateRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_DOC_ID)
-        const snapshot = await getDoc(stateRef)
+        const remoteData = await fetchRemoteStateFromGoogleSheets()
 
         if (!isMounted) {
           return
         }
 
-        if (snapshot.exists()) {
-          const remoteData = snapshot.data()
+        if (remoteData) {
           const remoteState = deserializeFirestoreState(remoteData)
           const remoteExpensesState = deserializeExpensesStateFromFirestore(remoteData.expensesState)
           const remoteAadharIncomeState = deserializeAadharIncomeStateFromFirestore(remoteData.aadharIncomeState)
+          const remoteGivenNotGivenState = deserializeGivenNotGivenStateFromFirestore(remoteData.givenNotGivenState)
           setLastSyncedAt(String(remoteData.updatedAt || ''))
+          setSyncState('saved')
+          setSyncErrorMessage('')
 
           setTables(remoteState.tables)
           setActiveTableId(remoteState.activeTableId)
@@ -1297,23 +1632,41 @@ function App() {
           setAadharIncomeMonth(remoteAadharIncomeState.selectedMonth)
           setAadharIncomeRows(remoteAadharIncomeState.rows)
           setSubmittedAadharIncomeMonths(remoteAadharIncomeState.submittedMonths)
+          if (Object.prototype.hasOwnProperty.call(remoteData, 'givenNotGivenState')) {
+            setGivenNotGivenMonth(remoteGivenNotGivenState.selectedMonth)
+            setGivenNotGivenRows(remoteGivenNotGivenState.rows)
+          }
 
           localStorage.setItem(STORAGE_KEY_MULTI, JSON.stringify(remoteState))
           localStorage.setItem(STORAGE_KEY_EXPENSES, JSON.stringify(remoteExpensesState))
           localStorage.setItem(STORAGE_KEY_AADHAR_INCOME, JSON.stringify(remoteAadharIncomeState))
+          if (Object.prototype.hasOwnProperty.call(remoteData, 'givenNotGivenState')) {
+            localStorage.setItem(STORAGE_KEY_GIVEN_NOT_GIVEN, JSON.stringify(remoteGivenNotGivenState))
+          }
         } else {
           const syncedAt = await saveStateToFirestore({
             ...initialState,
             expensesState: initialExpensesState,
             aadharIncomeState: initialAadharIncomeState,
+            givenNotGivenState: initialGivenNotGivenState,
           })
           setLastSyncedAt(syncedAt || new Date().toISOString())
+          setSyncState('saved')
+          setSyncErrorMessage('')
         }
       } catch (error) {
-        console.error('Failed to initialize data in Firebase:', error)
+        console.error('Failed to initialize data from Google Sheets:', error)
+        setSyncState('error')
+        setSyncErrorMessage(error instanceof Error ? error.message : 'Unable to initialize sync')
       } finally {
         if (isMounted) {
-          setFirestoreReady(true)
+          const canSync = Boolean(APPS_SCRIPT_STATE_API_URL)
+          setFirestoreReady(canSync)
+          if (!canSync) {
+            setSyncState('disabled')
+          } else {
+            setSyncState((previous) => (previous === 'disabled' ? 'ready' : previous))
+          }
         }
       }
     }
@@ -1643,6 +1996,24 @@ function App() {
     return visibleExpenseRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
   }, [visibleExpenseRows])
 
+  const visibleGivenNotGivenRows = useMemo(() => {
+    const monthRows = givenNotGivenRows
+      .filter((row) => row.date?.slice(0, 7) === givenNotGivenMonth)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+
+    let runningBalance = 0
+
+    return monthRows.map((row, index) => {
+      runningBalance += getGivenNotGivenSignedAmount(row)
+
+      return {
+        ...row,
+        sNo: index + 1,
+        totalBalance: runningBalance,
+      }
+    })
+  }, [givenNotGivenRows, givenNotGivenMonth])
+
   const expenseMonthTotalIncome = Number(
     expenseMonthSummaryByMonth[expenseMonth]?.totalIncome
       ?? ((Number(salaryByMonth[expenseMonth] || 0)) + (Number(otherIncomeByMonth[expenseMonth] || 0))),
@@ -1732,10 +2103,10 @@ function App() {
       const monthRows = aadharIncomeRows.filter((row) => getDateMonthKey(row.date) === monthKey)
       const totalIncome = monthRows
         .filter((row) => row.type !== 'Expense')
-        .reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+        .reduce((sum, row) => sum + getAadharIncomeRowTotalContribution(row), 0)
       const totalExpenditure = monthRows
         .filter((row) => row.type === 'Expense')
-        .reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+        .reduce((sum, row) => sum + getAadharIncomeRowTotalContribution(row), 0)
 
       const carryFromPrevious = runningCarry
       const balance = totalIncome - totalExpenditure + carryFromPrevious
@@ -1827,6 +2198,20 @@ function App() {
   }, [newExpenseRowId])
 
   useEffect(() => {
+    if (!newGivenNotGivenRowId) {
+      return
+    }
+    const timer = setTimeout(() => {
+      const nameInput = document.querySelector(`[data-given-not-given-row-id="${newGivenNotGivenRowId}"] [data-given-not-given-row-field="name"]`)
+      if (nameInput) {
+        nameInput.focus()
+      }
+      setNewGivenNotGivenRowId(null)
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [newGivenNotGivenRowId])
+
+  useEffect(() => {
     if (!newAadharIncomeRowId) {
       return
     }
@@ -1855,6 +2240,48 @@ function App() {
       return [...previousRows, newRow].map((row, index) => ({ ...row, sNo: index + 1 }))
     })
   }, [expenseMode, expenseMonth])
+
+  useEffect(() => {
+    setGivenNotGivenRows((previousRows) => {
+      if (previousRows.some((row) => row.date?.slice(0, 7) === givenNotGivenMonth)) {
+        return previousRows
+      }
+
+      const newRow = createGivenNotGivenRow(previousRows.length + 1, getEntryDefaultDate(givenNotGivenMonth))
+      setNewGivenNotGivenRowId(newRow.id)
+      return [...previousRows, newRow].map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }, [givenNotGivenMonth])
+
+  useEffect(() => {
+    let isMounted = true
+    loadGivenNotGivenSheet(
+      (nextRows) => {
+        if (isMounted) {
+          setGivenNotGivenRows(nextRows)
+        }
+      },
+      (nextStatus) => {
+        if (isMounted) {
+          setGivenNotGivenSheetStatus(nextStatus)
+        }
+      },
+      (nextError) => {
+        if (isMounted) {
+          setGivenNotGivenSheetError(nextError)
+        }
+      },
+      (nextMonth) => {
+        if (isMounted) {
+          setGivenNotGivenMonth(nextMonth)
+        }
+      },
+    )
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   useEffect(() => {
     if (aadharIncomeMode !== 'entry') {
@@ -2007,6 +2434,18 @@ function App() {
     }))
   }
 
+  function updateGivenNotGivenCell(rowId, key, value) {
+    setGivenNotGivenRows((previousRows) => previousRows.map((row) => {
+      if (row.id !== rowId) {
+        return row
+      }
+      return {
+        ...row,
+        [key]: value,
+      }
+    }))
+  }
+
   function updateExpenseSalary(monthKey, value) {
     setSalaryByMonth((previous) => ({
       ...previous,
@@ -2047,6 +2486,15 @@ function App() {
       const filtered = previousRows.filter((row) => row.id !== rowId)
       const hasCurrentMonthRow = filtered.some((row) => row.date?.slice(0, 7) === aadharIncomeMonth)
       const nextRows = hasCurrentMonthRow ? filtered : [...filtered, createAadharIncomeRow(filtered.length + 1, getEntryDefaultDate(aadharIncomeMonth))]
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function deleteGivenNotGivenRow(rowId) {
+    setGivenNotGivenRows((previousRows) => {
+      const filtered = previousRows.filter((row) => row.id !== rowId)
+      const hasCurrentMonthRow = filtered.some((row) => row.date?.slice(0, 7) === givenNotGivenMonth)
+      const nextRows = hasCurrentMonthRow ? filtered : [...filtered, createGivenNotGivenRow(filtered.length + 1, getEntryDefaultDate(givenNotGivenMonth))]
       return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
     })
   }
@@ -2173,6 +2621,21 @@ function App() {
       const nextRows = [...previousRows]
       nextRows.splice(rowIndex + 1, 0, newRow)
       setNewAadharIncomeRowId(newRow.id)
+      return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
+    })
+  }
+
+  function insertGivenNotGivenRowAfter(rowId) {
+    setGivenNotGivenRows((previousRows) => {
+      const rowIndex = previousRows.findIndex((row) => row.id === rowId)
+      if (rowIndex === -1) {
+        return previousRows
+      }
+
+      const newRow = createGivenNotGivenRow(previousRows.length + 1, getEntryDefaultDate(givenNotGivenMonth))
+      const nextRows = [...previousRows]
+      nextRows.splice(rowIndex + 1, 0, newRow)
+      setNewGivenNotGivenRowId(newRow.id)
       return nextRows.map((row, index) => ({ ...row, sNo: index + 1 }))
     })
   }
@@ -2515,6 +2978,16 @@ function App() {
     })
   }
 
+  // Wrap value in formula format to prevent Google Sheets auto-formatting
+  function wrapValueAsFormula(value) {
+    if (value === null || value === undefined || value === '') {
+      return value
+    }
+    const stringValue = String(value)
+    // Wrap in ="..." format to force text display
+    return `="${stringValue.replace(/"/g, '""')}"`
+  }
+
   async function exportToPDF() {
     const baseRows = isAadharTable ? visibleRows : rows
     const filteredRows = getFilteredRowsByDate(baseRows, exportStartDate, exportEndDate)
@@ -2567,9 +3040,9 @@ function App() {
     const tableName = activeTable?.name || 'Table'
     const data = filteredRows.map((row) => {
       return {
-        'Date': row.date || '',
+        'Date': wrapValueAsFormula(row.date),
         ...columns.reduce((acc, col) => {
-          acc[col] = row[col] || ''
+          acc[col] = wrapValueAsFormula(row[col])
           return acc
         }, {}),
       }
@@ -2634,9 +3107,9 @@ function App() {
     const XLSX = await loadXlsxModule()
     const tableName = activeTable?.name || 'Table'
     const data = monthRows.map((row) => ({
-      Date: row.date || '',
+      Date: wrapValueAsFormula(row.date),
       ...columns.reduce((acc, col) => {
-        acc[col] = row[col] || ''
+        acc[col] = wrapValueAsFormula(row[col])
         return acc
       }, {}),
     }))
@@ -2705,19 +3178,19 @@ function App() {
     const XLSX = await loadXlsxModule()
     const fyLabel = formatFinancialYear(Number(viewFy))
     const data = hoFySummaryRows.map((item) => ({
-      Month: formatMonthKey(item.month),
-      Enrollments: Number(item.enrollments.toFixed(2)),
-      'Total Sale': Number(item.sale.toFixed(2)),
-      'Paid Amount': Number(item.paidAmount.toFixed(2)),
-      'HO Remaining': Number(item.remaining.toFixed(2)),
+      Month: wrapValueAsFormula(formatMonthKey(item.month)),
+      Enrollments: wrapValueAsFormula(item.enrollments.toFixed(2)),
+      'Total Sale': wrapValueAsFormula(item.sale.toFixed(2)),
+      'Paid Amount': wrapValueAsFormula(item.paidAmount.toFixed(2)),
+      'HO Remaining': wrapValueAsFormula(item.remaining.toFixed(2)),
     }))
 
     data.push({
-      Month: 'Year Total',
-      Enrollments: Number(hoFyYearTotals.enrollments.toFixed(2)),
-      'Total Sale': Number(hoFyYearTotals.sale.toFixed(2)),
-      'Paid Amount': Number(hoFyYearTotals.paidAmount.toFixed(2)),
-      'HO Remaining': Number(hoFyYearTotals.remaining.toFixed(2)),
+      Month: wrapValueAsFormula('Year Total'),
+      Enrollments: wrapValueAsFormula(hoFyYearTotals.enrollments.toFixed(2)),
+      'Total Sale': wrapValueAsFormula(hoFyYearTotals.sale.toFixed(2)),
+      'Paid Amount': wrapValueAsFormula(hoFyYearTotals.paidAmount.toFixed(2)),
+      'HO Remaining': wrapValueAsFormula(hoFyYearTotals.remaining.toFixed(2)),
     })
 
     const ws = XLSX.utils.json_to_sheet(data)
@@ -2726,8 +3199,122 @@ function App() {
     XLSX.writeFile(wb, `Aadhar_HO_${fyLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
+  function exportToCSV() {
+    const baseRows = isAadharTable ? visibleRows : rows
+    const filteredRows = getFilteredRowsByDate(baseRows, exportStartDate, exportEndDate)
+    if (filteredRows.length === 0) {
+      window.alert('No data to export for the selected date range.')
+      return
+    }
+
+    const tableName = activeTable?.name || 'Table'
+    const headers = ['Date', ...columns]
+    let csvContent = headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(',') + '\n'
+
+    filteredRows.forEach((row) => {
+      const dateCell = `="${row.date || ''}"`
+      const cells = [dateCell, ...columns.map((col) => {
+        const value = row[col] || ''
+        const stringValue = String(value)
+        return stringValue === '' ? '' : `"${stringValue.replace(/"/g, '""')}"`
+      })]
+      csvContent += cells.join(',') + '\n'
+    })
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `${tableName}_${new Date().toISOString().slice(0, 10)}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  function exportSelectedMonthToCSV() {
+    if (!isAadharTable || isViewMode || !selectedMonthKey) {
+      return
+    }
+
+    const monthRows = rows
+      .filter((row) => row.date?.slice(0, 7) === selectedMonthKey)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+
+    if (monthRows.length === 0) {
+      window.alert('No month data to export.')
+      return
+    }
+
+    const tableName = activeTable?.name || 'Table'
+    const headers = ['Date', ...columns]
+    let csvContent = headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(',') + '\n'
+
+    monthRows.forEach((row) => {
+      const dateCell = `="${row.date || ''}"`
+      const cells = [dateCell, ...columns.map((col) => {
+        const value = row[col] || ''
+        const stringValue = String(value)
+        return stringValue === '' ? '' : `"${stringValue.replace(/"/g, '""')}"`
+      })]
+      csvContent += cells.join(',') + '\n'
+    })
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `${tableName}_${selectedMonthKey}_${new Date().toISOString().slice(0, 10)}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  function exportFyToCSV() {
+    if (!isAadharTable || !isViewMode) {
+      return
+    }
+
+    if (hoFySummaryRows.length === 0) {
+      window.alert('No FY data to export.')
+      return
+    }
+
+    const fyLabel = formatFinancialYear(Number(viewFy))
+    const headers = ['Month', 'Enrollments', 'Total Sale', 'Paid Amount', 'HO Remaining']
+    let csvContent = headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(',') + '\n'
+
+    hoFySummaryRows.forEach((item) => {
+      const cells = [
+        `="${formatMonthKey(item.month)}"`,
+        `="${item.enrollments.toFixed(2)}"`,
+        `="${item.sale.toFixed(2)}"`,
+        `="${item.paidAmount.toFixed(2)}"`,
+        `="${item.remaining.toFixed(2)}"`,
+      ]
+      csvContent += cells.join(',') + '\n'
+    })
+
+    const yearTotalCells = [
+      `="Year Total"`,
+      `="${hoFyYearTotals.enrollments.toFixed(2)}"`,
+      `="${hoFyYearTotals.sale.toFixed(2)}"`,
+      `="${hoFyYearTotals.paidAmount.toFixed(2)}"`,
+      `="${hoFyYearTotals.remaining.toFixed(2)}"`,
+    ]
+    csvContent += yearTotalCells.join(',') + '\n'
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `Aadhar_HO_${fyLabel}_${new Date().toISOString().slice(0, 10)}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   function openFeature(featureId) {
-    if (featureId === 'aadhar' || featureId === 'expenses' || featureId === 'aadhar-income') {
+      if (featureId === 'aadhar' || featureId === 'expenses' || featureId === 'given-not-given' || featureId === 'aadhar-income') {
       setSelectedFeature(featureId)
       return
     }
@@ -2786,6 +3373,24 @@ function App() {
                   )
                 }
 
+                if (card.id === 'given-not-given') {
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      className="feature-image-only-btn"
+                      onClick={() => openFeature(card.id)}
+                      aria-label="Open Given Not Given"
+                    >
+                      <img
+                        src={givenNotGivenCardImage}
+                        alt="Given Not Given"
+                        className="feature-image-only"
+                      />
+                    </button>
+                  )
+                }
+
                 if (card.id === 'aadhar-income') {
                   return (
                     <button
@@ -2830,11 +3435,11 @@ function App() {
                   <button
                     key={card.id}
                     type="button"
-                    className={card.id === 'expenses' || card.id === 'aadhar-income' ? 'feature-card active' : 'feature-card'}
+                    className={card.id === 'expenses' || card.id === 'given-not-given' || card.id === 'aadhar-income' ? 'feature-card active' : 'feature-card'}
                     onClick={() => openFeature(card.id)}
                   >
                     <h3>{card.name}</h3>
-                    {card.id !== 'expenses' && card.id !== 'aadhar-income' && <span className="feature-badge">Coming Soon</span>}
+                    {card.id !== 'expenses' && card.id !== 'given-not-given' && card.id !== 'aadhar-income' && <span className="feature-badge">Coming Soon</span>}
                   </button>
                 )
               })}
@@ -2958,6 +3563,9 @@ function App() {
                   <button type="button" onClick={exportToExcel} className="export-excel">
                     Export Excel
                   </button>
+                  <button type="button" onClick={exportToCSV} className="export-csv">
+                    Export CSV
+                  </button>
                 </div>
 
                 <div className="date-box">
@@ -3069,6 +3677,9 @@ function App() {
                         </button>
                         <button type="button" onClick={exportFyToExcel} className="export-excel">
                           Export FY Excel
+                        </button>
+                        <button type="button" onClick={exportFyToCSV} className="export-csv">
+                          Export FY CSV
                         </button>
                       </div>
                       <div className="year-unlock-wrap">
@@ -3261,6 +3872,9 @@ function App() {
                           </button>
                           <button type="button" onClick={exportSelectedMonthToExcel} className="export-excel">
                             Export Month Excel
+                          </button>
+                          <button type="button" onClick={exportSelectedMonthToCSV} className="export-csv">
+                            Export Month CSV
                           </button>
                         </div>
                       )}
@@ -3706,6 +4320,170 @@ function App() {
               )}
             </div>
           </>
+        ) : selectedFeature === 'given-not-given' ? (
+          <>
+            <div className="feature-page-head">
+              <button
+                type="button"
+                className="back-home-btn"
+                onClick={() => setSelectedFeature(null)}
+              >
+                Home
+              </button>
+              <h2>Given / Not Given (Entry Mode)</h2>
+            </div>
+
+            <div className="panel given-not-given-panel">
+              <div className="expenses-controls">
+                <div className="mode-month-field">
+                  <label htmlFor="given-not-given-month">Select Month:</label>
+                  <input
+                    id="given-not-given-month"
+                    type="month"
+                    value={givenNotGivenMonth}
+                    onChange={(event) => setGivenNotGivenMonth(event.target.value)}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="submit-month-btn"
+                  onClick={() => loadGivenNotGivenSheet(
+                    setGivenNotGivenRows,
+                    setGivenNotGivenSheetStatus,
+                    setGivenNotGivenSheetError,
+                    setGivenNotGivenMonth,
+                  )}
+                >
+                  Refresh Sheet
+                </button>
+              </div>
+
+              <p className="mode-hint">
+                {givenNotGivenSheetStatus === 'loading'
+                  ? 'Loading data from Google Sheet...'
+                  : givenNotGivenSheetStatus === 'error'
+                    ? `Google Sheet sync failed: ${givenNotGivenSheetError}`
+                    : 'Connected to Google Sheet.'}
+              </p>
+
+              <div className="sheet-wrap given-not-given-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SL.NO</th>
+                      <th>DATE</th>
+                      <th>NAME</th>
+                      <th>CELL</th>
+                      <th>VILLAGE</th>
+                      <th>TYPE (Given Not Given)</th>
+                      <th>AMOUNT</th>
+                      <th>TOTAL BALANCE</th>
+                      <th>ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleGivenNotGivenRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="empty-row">No entries for this month. Add a row to begin.</td>
+                      </tr>
+                    ) : (
+                      visibleGivenNotGivenRows.map((row) => (
+                        <tr key={row.id} data-given-not-given-row-id={row.id}>
+                          <td>{row.sNo}</td>
+                          <td>
+                            <DateInputDMY
+                              value={row.date}
+                              useNativeDatePicker
+                              onValueChange={(nextValue) => updateGivenNotGivenCell(row.id, 'date', nextValue)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              data-given-not-given-row-field="name"
+                              value={row.name}
+                              onChange={(event) => updateGivenNotGivenCell(row.id, 'name', event.target.value)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={row.cellNo}
+                              onChange={(event) => updateGivenNotGivenCell(row.id, 'cellNo', event.target.value)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              value={row.village}
+                              onChange={(event) => updateGivenNotGivenCell(row.id, 'village', event.target.value)}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              value={row.type}
+                              onChange={(event) => updateGivenNotGivenCell(row.id, 'type', event.target.value)}
+                            >
+                              <option value="Given">Given</option>
+                              <option value="Not Given">Not Given</option>
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={row.amount}
+                              onChange={(event) => {
+                                const nextValue = event.target.value
+                                if (!/^\d*\.?\d*$/.test(nextValue)) {
+                                  return
+                                }
+                                updateGivenNotGivenCell(row.id, 'amount', nextValue)
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key !== 'Enter') {
+                                  return
+                                }
+                                event.preventDefault()
+                                insertGivenNotGivenRowAfter(row.id)
+                              }}
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td>
+                            ₹{formatRupees(row.totalBalance || 0)}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="row-delete-btn"
+                              onClick={() => deleteGivenNotGivenRow(row.id)}
+                              aria-label="Delete given/not given row"
+                            >
+                              <svg viewBox="0 0 24 24" className="row-delete-icon" aria-hidden="true" focusable="false">
+                                <path
+                                  fill="currentColor"
+                                  d="M9 3a1 1 0 0 0-1 1v1H5a1 1 0 1 0 0 2h1v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7h1a1 1 0 1 0 0-2h-3V4a1 1 0 0 0-1-1H9zm1 2h4v1h-4V5zm-2 2h8v12H8V7zm2 2a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1zm4 0a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1z"
+                                />
+                              </svg>
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr className="month-total-row">
+                      <td colSpan={7} className="month-total-label">Total Balance</td>
+                      <td className="month-total-amount">₹{formatRupees(visibleGivenNotGivenRows[visibleGivenNotGivenRows.length - 1]?.totalBalance || 0)}</td>
+                      <td className="month-total-amount">-</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </>
         ) : selectedFeature === 'aadhar-income' ? (
           <>
             <div className="feature-page-head">
@@ -3816,13 +4594,14 @@ function App() {
                           <th>Name</th>
                           <th>Type</th>
                           <th>Amount</th>
+                          <th>Subtract</th>
                           <th>Delete</th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleAadharIncomeRows.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className="empty-row">No entries for this month. Add a row to begin.</td>
+                            <td colSpan={7} className="empty-row">No entries for this month. Add a row to begin.</td>
                           </tr>
                         ) : (
                           visibleAadharIncomeRows.map((row) => {
@@ -3890,6 +4669,15 @@ function App() {
                                 />
                               </td>
                               <td>
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(row.excludeFromTotal)}
+                                  disabled={isAadharIncomeViewMode || isAadharIncomeMonthSubmitted}
+                                  onChange={(event) => updateAadharIncomeCell(row.id, 'excludeFromTotal', event.target.checked)}
+                                  aria-label={`Exclude ${row.name || 'row'} from totals`}
+                                />
+                              </td>
+                              <td>
                                 <button
                                   type="button"
                                   className="row-delete-btn"
@@ -3917,10 +4705,12 @@ function App() {
                             <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthTotalIncome)}</td>
                             <td className="month-total-cell">-</td>
                             <td className="month-total-cell">-</td>
+                            <td className="month-total-cell">-</td>
                           </tr>
                           <tr className="month-total-row salary-row">
                             <td colSpan={3} className="month-total-label expenses-lowercase-label">Total expenditure</td>
                             <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthTotalExpenditure)}</td>
+                            <td className="month-total-cell">-</td>
                             <td className="month-total-cell">-</td>
                             <td className="month-total-cell">-</td>
                           </tr>
@@ -3928,6 +4718,7 @@ function App() {
                             <tr className={aadharIncomeMonthCarryLabel === 'Surplus' ? 'month-total-row bank-balance-row' : 'month-total-row deficit-expense-row'}>
                               <td colSpan={3} className="month-total-label expenses-lowercase-label">Last month {aadharIncomeMonthCarryLabel}</td>
                               <td className="month-total-cell">₹{formatRupees(aadharIncomeMonthCarryAmount)}</td>
+                              <td className="month-total-cell">-</td>
                               <td className="month-total-cell">-</td>
                               <td className="month-total-cell">-</td>
                             </tr>
@@ -3942,6 +4733,7 @@ function App() {
                                   : 'Submit to carry forward'
                                 : '-'}
                             </td>
+                            <td className="month-total-cell">-</td>
                             <td className="month-total-cell">-</td>
                           </tr>
                         </tfoot>
@@ -3983,7 +4775,21 @@ function App() {
         <footer className="app-footer">
           <div className="footer-card">
             <p>© 2026 లావాదేవి All Rights Reserved</p>
-            <p className="footer-sync-meta">Last synced: {formatSyncTimestamp(lastSyncedAt)}</p>
+            <div className="footer-sync-block">
+              <p className={`footer-sync-status ${syncState}`}>{getSyncStatusLabel(syncState, syncErrorMessage)}</p>
+              <p className="footer-sync-meta">Last synced: {formatSyncTimestamp(lastSyncedAt)}</p>
+              {firestoreReady && syncState !== 'disabled' && (
+                <button
+                  type="button"
+                  onClick={handleManualSave}
+                  disabled={syncState === 'saving'}
+                  className={`footer-save-button ${syncState === 'saving' ? 'saving' : ''}`}
+                  title="Save all data to Google Sheets"
+                >
+                  {syncState === 'saving' ? '⏳ Saving...' : '💾 Save to Sheets'}
+                </button>
+              )}
+            </div>
           </div>
         </footer>
       )}
